@@ -29,12 +29,15 @@
                 <label for="epddriver">驱动</label>
                 <select id="epddriver" onchange="updateDitcherOptions()">
                     <option value="17" data-color="threeColor" data-size="1.54_200_200">1.54寸 (三色, UC8176)</option>
+                    <option value="18" data-color="blackWhiteColor" data-size="2.13_104_212">2.13寸低分(黑白, SSD1619)</option>
+                    <option value="19" data-color="threeColor" data-size="2.13_104_212">2.13寸低分(三色, SSD1619)</option>
                     <option value="0e" data-color="blackWhiteColor" data-size="2.13_128_250">2.13寸 (黑白, SSD1619)</option>
                     <option value="0f" data-color="threeColor" data-size="2.13_128_250">2.13寸 (三色, SSD1619)</option>
                     <option value="13" data-color="fourColor" data-size="2.8_152_296">2.8寸 (四色, JD79668)</option>
                     <option value="11" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1619)</option>
                     <option value="12" data-color="threeColor" data-size="2.9_128_296">2.9寸 (三色, SSD1619)</option>
                     <option value="10" data-color="fourColor" data-size="3.1_300_300">3.1寸 (四色, JD79668)</option>
+                    <option value="18" data-color="threeColor" data-size="3.7_240_416">3.7寸 (三色, AI智屏壳)</option>
                     <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A0)</option>
                     <option value="15" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A1)</option>
                     <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
@@ -44,7 +47,7 @@
                     <option value="04" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
                     <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
                     <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
-                    <option value="18" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, SES7.4_GU140)</option>
+                    <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, SES7.4_GU140)</option>
                     <option value="06" data-color="blackWhiteColor" data-size="7.5_800_480">7.5寸 (黑白, UC8179)</option>
                     <option value="07" data-color="threeColor" data-size="7.5_800_480">7.5寸 (三色, UC8179)</option>
                     <option value="0c" data-color="fourColor" data-size="7.5_800_480">7.5寸 (四色, JD79665)</option>
@@ -144,6 +147,7 @@
                 <select id="canvasSize" onchange="updateCanvasSize()">
                     <option value="1.54_152_152">1.54 (152x152)</option>
                     <option value="1.54_200_200">1.54 (200x200)</option>
+                    <option value="2.13_104_212">2.13 (104x212)</option>
                     <option value="2.13_212_104">2.13 (212x104)</option>
                     <option value="2.13_250_122">2.13 (250x122)</option>
                     <option value="2.13_128_250">2.13 (128x250)</option>
@@ -154,6 +158,7 @@
                     <option value="2.9_384_168">2.9 (384x168)</option>
                     <option value="3.1_300_300">3.1 (300x300)</option>
                     <option value="3.5_384_184">3.5 (384x184)</option>
+                    <option value="3.7_240_416">3.7 (240x416)</option>
                     <option value="3.7_416_240">3.7 (416x240)</option>
                     <option value="3.97_800_480">3.97 (800x480)</option>
                     <option value="3.98_768_552">3.98 (768x552)</option>
@@ -247,6 +252,7 @@
                             <option value="jarvis">Jarvis-Judice-Ninke</option>
                             <option value="blueNoise">蓝噪声 (Blue Noise)</option>
                             <option value="riemersma">Riemersma (Hilbert)</option>
+                            <option value="diagonal">对角线有序 (Diagonal 45°)</option>
                             <option value="none">无抖动</option>
                         </select>
                     </div>

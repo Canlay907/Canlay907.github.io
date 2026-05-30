@@ -1716,6 +1716,162 @@ function claheEnhance(imageData, clipLimit, tileSize) {
 }
 //重色模式使用函数结束
 
+
+// ==================== 对角线 Atkinson 抖动 (Diagonal Atkinson Dither) ====================
+/**
+ * 对角线偏置 Atkinson 误差扩散（sRGB空间 + 蛇形扫描）
+ *
+ * 设计依据（参考图片分析）：
+ *   img/1.jpg / img/3.jpg 特写可见明显人字形/斜纹纹理：
+ *     → 误差核偏向 ±45° 对角方向，形成级联的 V 形图案
+ *   img/2.jpg / img/3.jpg 暗部发丝有层次感（可见红/黑/黄混合点）：
+ *     → 说明暗区误差传播有效，必须在 sRGB 空间传播（不能用线性空间）
+ *
+ * 为什么不用线性空间误差传播：
+ *   暗区像素 linear≈0.03，量化到黑色后误差=0.03；
+ *   除以8后每邻居仅收到 0.003，远不足以翻转颜色，导致"发丝全黑"。
+ *   sRGB空间中同样像素值≈30，误差除以8≈3.7，可以正常积累触发翻转。
+ *
+ * 为什么不用亮度自适应 t 因子：
+ *   t 因子直接缩减误差传播量，暗区 t≈0.25 → 只传 25% 误差
+ *   → 积累更慢，发丝同样全黑。
+ *
+ * 核设计：
+ *   中间调（0.06 ≤ lum ≤ 0.94）— 对角偏置核（产生人字纹）：
+ *     (2s, 0)  × 1/8   水平跳格
+ *     (-s, +1) × 2/8   ↙ 强对角
+ *     (+s, +1) × 2/8   ↘ 强对角
+ *     (0,  +2) × 1/8   垂直跳格
+ *     总计 6/8（与标准 Atkinson 相同，保留 Atkinson 高光保护特性）
+ *
+ *   极值区（lum < 0.06 或 > 0.94）— 标准 Atkinson 核（保留层次感）：
+ *     (+s,0)  (+2s,0)  (-s,+1)  (0,+1)  (+s,+1)  (0,+2)  各 1/8
+ *     即时邻居（+s,0）权重确保每个误差立刻被吸收，防止大面积单色
+ *
+ * 蛇形扫描：奇数行从右向左，s=-1 自动翻转核的水平方向，
+ *   对角对称性保持不变（-s 和 +s 对角始终各占 2/8）。
+ *
+ * @param {ImageData} imageData  图像数据
+ * @param {number}    strength   抖动强度（0~1）
+ * @param {string}    colorMode  调色板模式
+ * @returns {ImageData}
+ */
+function diagonalDither(imageData, strength, colorMode) {
+    const width  = imageData.width;
+    const height = imageData.height;
+    const data   = imageData.data;
+    const N      = width * height;
+
+    // ── 预处理①：暗部提升（解决背景/发丝大面积纯黑问题）──────────────
+    // 对比 3.jpg vs 4.jpg：背景和发丝在3.jpg中为多色混合纹理，
+    // 4.jpg中则是大块纯黑，说明暗区像素（sRGB≈30-60）被全部量化到黑色。
+    // 根本原因：这些像素亮度 lum≈0.03-0.10，量化到黑色的误差太小，
+    //           无法通过 Atkinson 扩散触发邻居选非黑色。
+    // 方案：对 maxChannel < 115 的像素施加正比于暗度的亮度提升，
+    //       将其推入 lum≈0.15-0.25 的中间调区间，
+    //       让误差扩散有机会分配到红/黄色，产生多色纹理而非纯黑。
+    for (let i = 0; i < N; i++) {
+        const idx  = i * 4;
+        const r    = data[idx], g = data[idx + 1], b = data[idx + 2];
+        const maxC = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        if (maxC < 115) {
+            // 最暗时提升约 +12，越接近 115 提升越少（线性渐变）
+            const lift = (((115 - maxC) / 115) * 12 + 0.5) | 0;
+            data[idx]     = r + lift;           // maxC < 115 → r+lift ≤ 137，无需 min
+            data[idx + 1] = g + lift;
+            data[idx + 2] = b + lift;
+        }
+    }
+
+    // ── 预处理②：暖色调向红色偏移（保守版）──────────────────────────
+    // 问题：CIEDE2000 在橙色调（R≈200,G≈150,B≈80）中把黄色 EPD 判定更近，
+    //       导致大量橙色像素被量化到黄色而非红色。
+    // 方案：对红色主导且饱和度足够的像素，小幅增大 R、减小 G。
+    //       比上一版保守（max 18→15），避免过度推移影响皮肤色调。
+    for (let i = 0; i < N; i++) {
+        const idx = i * 4;
+        const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+        if (r > g && r > b && r > 80) {
+            const minC = g < b ? g : b;
+            const sat  = (r - minC) / r;
+            if (sat > 0.15) {
+                const boost = Math.min((sat * 22) | 0, 15);
+                data[idx]     = r + boost > 255 ? 255 : r + boost;
+                data[idx + 1] = g - (boost >> 1) < 0 ? 0 : g - (boost >> 1);
+            }
+        }
+    }
+
+    // 误差缓冲（sRGB 空间，单位与 data[] 相同：0-255 浮点）
+    const eR = new Float32Array(N);
+    const eG = new Float32Array(N);
+    const eB = new Float32Array(N);
+
+    const useLegacy = document.getElementById('useLegacyDither').checked;
+
+    // 安全加误差辅助（边界检查）
+    const addErr = (arr, nx, ny, v) => {
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            arr[ny * width + nx] += v;
+        }
+    };
+
+    // ── 对角线扫描 + 标准 Atkinson 核 ──────────────────────────────────
+    // 核心思路：扫描顺序决定纹理方向。
+    // 横向扫描 → 误差横向流动 → 横向纹理（无论核如何调整都无法根本改变）
+    // 对角扫描 → 误差沿斜线流动 → 自然产生 45° 斜向纹理
+    //
+    // 按斜线 d = x+y 的顺序处理像素（d=0,1,2,...,W+H-2）
+    // 每条斜线内从右上到左下：(xStart,yStart) → (xStart-1,yStart+1) → ...
+    // 斜线"前进"方向 = (-1,+1)，Atkinson 的 6 个邻居全部在未处理区域：
+    //   斜线内前进：(x-1,y+1) [d]   (x-2,y+2) [d]
+    //   下一条斜线：(x+1,y)   [d+1] (x,y+1)   [d+1] (x-1,y+2) [d+1]
+    //   跨两条斜线：(x,y+2)   [d+2]
+    // 总计 6/8（标准 Atkinson），无需修改核，扫描方向本身产生斜纹
+
+    for (let d = 0; d < width + height - 1; d++) {
+        const xStart = Math.min(d, width  - 1);
+        const yStart = Math.max(0, d - width + 1);
+        const xEnd   = Math.max(0, d - height + 1);
+        const len    = xStart - xEnd + 1;
+
+        for (let k = 0; k < len; k++) {
+            const x  = xStart - k;
+            const y  = yStart + k;
+            const pi = y * width + x;
+            const idx = pi * 4;
+
+            const r = Math.max(0, Math.min(255, data[idx]     + eR[pi]));
+            const g = Math.max(0, Math.min(255, data[idx + 1] + eG[pi]));
+            const b = Math.max(0, Math.min(255, data[idx + 2] + eB[pi]));
+
+            const closest = useLegacy
+                ? findClosestColorRed(r|0, g|0, b|0, colorMode)
+                : findClosestColor(r|0, g|0, b|0, colorMode);
+
+            data[idx]     = closest.r;
+            data[idx + 1] = closest.g;
+            data[idx + 2] = closest.b;
+
+            const dR = (r - closest.r) * strength;
+            const dG = (g - closest.g) * strength;
+            const dB = (b - closest.b) * strength;
+
+            // 标准 Atkinson 核，沿对角扫描方向自动产生斜向纹理
+            // 权重验证：6 × 1/8 = 6/8 ✓
+            addErr(eR, x-1, y+1, dR/8); addErr(eG, x-1, y+1, dG/8); addErr(eB, x-1, y+1, dB/8); // 斜线前进
+            addErr(eR, x-2, y+2, dR/8); addErr(eG, x-2, y+2, dG/8); addErr(eB, x-2, y+2, dB/8); // 斜线跳格
+            addErr(eR, x+1, y,   dR/8); addErr(eG, x+1, y,   dG/8); addErr(eB, x+1, y,   dB/8); // d+1 右侧
+            addErr(eR, x,   y+1, dR/8); addErr(eG, x,   y+1, dG/8); addErr(eB, x,   y+1, dB/8); // d+1 下方
+            addErr(eR, x-1, y+2, dR/8); addErr(eG, x-1, y+2, dG/8); addErr(eB, x-1, y+2, dB/8); // d+1 斜下
+            addErr(eR, x,   y+2, dR/8); addErr(eG, x,   y+2, dG/8); addErr(eB, x,   y+2, dB/8); // d+2 跳格
+        }
+    }
+    return imageData;
+}
+
+
+
 // ==================== 主抖动分发函数 ====================
 function ditherImage(imageData, alg, strength, colorMode) {
   
@@ -1749,6 +1905,7 @@ function ditherImage(imageData, alg, strength, colorMode) {
         case "twoRowSierra": return twoRowSierraDither(imageData, strength, colorMode);
         case "ostromoukhov": return ostromoukhovDither(imageData, strength, colorMode);
         case "linearLightSierra": return linearLightSierraDither(imageData, strength, colorMode);
+        case "diagonal": return diagonalDither(imageData, strength, colorMode);
         default: return imageData;
     }
 }

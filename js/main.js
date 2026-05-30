@@ -43,6 +43,7 @@ const EpdCmd = {
 const canvasSizes = [
     { name: '1.54_152_152', width: 152, height: 152 },
     { name: '1.54_200_200', width: 200, height: 200 },
+    { name: '2.13_104_212', width: 104, height: 212 },
     { name: '2.13_212_104', width: 212, height: 104 },
     { name: '2.13_250_122', width: 250, height: 122 },
     { name: '2.13_128_250', width: 128, height: 250 },
@@ -53,11 +54,13 @@ const canvasSizes = [
     { name: '2.9_384_168', width: 384, height: 168 },
     { name: '3.1_300_300', width: 300, height: 300 },
     { name: '3.5_384_184', width: 384, height: 184 },
+    { name: '3.7_240_416', width: 240, height: 416 },//3.7寸 第一代AI智屏壳
     { name: '3.7_416_240', width: 416, height: 240 },
     { name: '3.97_800_480', width: 800, height: 480 },
     { name: '3.98_768_552', width: 768, height: 552 },//3.98寸四色手机壳
     { name: '4.2_400_300', width: 400, height: 300 },
     { name: '5.79_792_272', width: 792, height: 272 },
+    { name: '5.81_720_256', width: 720, height: 256 },//海带屏
     { name: '5.83_600_448', width: 600, height: 448 },
     { name: '5.83_648_480', width: 648, height: 480 },
     { name: '7.4_800_480', width: 800, height: 480 },//SES7.4_GU140
@@ -68,7 +71,8 @@ const canvasSizes = [
     { name: '10.85_1360_480', width: 1360, height: 480 },
     { name: '11.6_960_640', width: 960, height: 640 },
     { name: '4E_600_400', width: 600, height: 400 },
-    { name: '7.3E6', width: 480, height: 800 }
+    { name: '7.3E6', width: 480, height: 800 }, 
+    { name: '7.3E6_800_480', width: 800, height: 480 }
 ];
 
 // ==================== 工具函数 ====================
