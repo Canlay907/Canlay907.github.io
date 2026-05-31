@@ -17,6 +17,7 @@
                 <button id="connectbutton" type="button" class="primary" onclick="preConnect()">连接</button>
                 <button id="reconnectbutton" type="button" class="secondary" onclick="reConnect()">重连</button>
                 <button type="button" class="secondary" onclick="clearLog()">清空日志</button>
+                <button type="button" class="primary" id="QuDongSel" onclick="QuDongSelect()">切换tsl驱动</button>
             </div>
             <div class="flex-group">
                 <label for="blenamefilter">设备ID:</label>
@@ -28,33 +29,6 @@
             <div class="flex-group">
                 <label for="epddriver">驱动</label>
                 <select id="epddriver" onchange="updateDitcherOptions()">
-                    <option value="17" data-color="threeColor" data-size="1.54_200_200">1.54寸 (三色, UC8176)</option>
-                    <option value="18" data-color="blackWhiteColor" data-size="2.13_104_212">2.13寸低分(黑白, SSD1619)</option>
-                    <option value="19" data-color="threeColor" data-size="2.13_104_212">2.13寸低分(三色, SSD1619)</option>
-                    <option value="0e" data-color="blackWhiteColor" data-size="2.13_128_250">2.13寸 (黑白, SSD1619)</option>
-                    <option value="0f" data-color="threeColor" data-size="2.13_128_250">2.13寸 (三色, SSD1619)</option>
-                    <option value="13" data-color="fourColor" data-size="2.8_152_296">2.8寸 (四色, JD79668)</option>
-                    <option value="11" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1619)</option>
-                    <option value="12" data-color="threeColor" data-size="2.9_128_296">2.9寸 (三色, SSD1619)</option>
-                    <option value="10" data-color="fourColor" data-size="3.1_300_300">3.1寸 (四色, JD79668)</option>
-                    <option value="18" data-color="threeColor" data-size="3.7_240_416">3.7寸 (三色, AI智屏壳)</option>
-                    <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A0)</option>
-                    <option value="15" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A1)</option>
-                    <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
-                    <option value="02" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, UC8176)</option>
-                    <option value="16" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SES_4.2BWR_GL340)</option>
-                    <option value="03" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
-                    <option value="04" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
-                    <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
-                    <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
-                    <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, SES7.4_GU140)</option>
-                    <option value="06" data-color="blackWhiteColor" data-size="7.5_800_480">7.5寸 (黑白, UC8179)</option>
-                    <option value="07" data-color="threeColor" data-size="7.5_800_480">7.5寸 (三色, UC8179)</option>
-                    <option value="0c" data-color="fourColor" data-size="7.5_800_480">7.5寸 (四色, JD79665)</option>
-                    <option value="08" data-color="blackWhiteColor" data-size="7.5_640_384">7.5寸低分 (黑白, UC8159)</option>
-                    <option value="09" data-color="threeColor" data-size="7.5_640_384">7.5寸低分 (三色, UC8159)</option>
-                    <option value="0a" data-color="blackWhiteColor" data-size="7.5_880_528">7.5寸HD (黑白, SSD1677)</option>
-                    <option value="0b" data-color="threeColor" data-size="7.5_880_528">7.5寸HD (三色, SSD1677)</option>
                 </select>
                 <label for="epdpins">引脚</label>
                 <input id="epdpins" type="text" value="">
@@ -164,6 +138,7 @@
                     <option value="3.98_768_552">3.98 (768x552)</option>
                     <option value="4.2_400_300" selected>4.2 (400x300)</option>
                     <option value="5.79_792_272">5.79 (792x272)</option>
+                    <option value="5.81_720_256">5.81 (720x256)</option>
                     <option value="5.83_600_448">5.83 (600x448)</option>
                     <option value="5.83_648_480">5.83 (648x480)</option>
                     <option value="7.4_800_480">7.4 (800x480)</option>
@@ -175,6 +150,7 @@
                     <option value="11.6_960_640">11.6 (960x640)</option>
                     <option value="4E_600_400">4E (600x400)</option>
                     <option value="7.3E6">7.3E6 (480x800)</option>
+                    <option value="7.3E6_800_480">7.3E6 (800x480)</option>
                 </select>
             </div>
             <div class="flex-group">
@@ -474,5 +450,81 @@
 <script type="text/javascript" src="js/crop.js?v=20251109"></script>
 <script type="text/javascript" src="js/paint.js?v=20260131_2"></script>
 <script type="text/javascript" src="js/main.js?v=20260131_4"></script>
+<script type="text/javascript">
+var QuDongMoShi = "";
+function QuDongSelect(){
+    var QuDong_DongShan = `
+                    <option value="17" data-color="threeColor" data-size="1.54_200_200">1.54寸 (三色, UC8176)</option>
+                    <option value="18" data-color="blackWhiteColor" data-size="2.13_104_212">2.13寸低分(黑白, SSD1619)</option>
+                    <option value="19" data-color="threeColor" data-size="2.13_104_212">2.13寸低分(三色, SSD1619)</option>
+                    <option value="0e" data-color="blackWhiteColor" data-size="2.13_128_250">2.13寸 (黑白, SSD1619)</option>
+                    <option value="0f" data-color="threeColor" data-size="2.13_128_250">2.13寸 (三色, SSD1619)</option>
+                    <option value="13" data-color="fourColor" data-size="2.8_152_296">2.8寸 (四色, JD79668)</option>
+                    <option value="11" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1619)</option>
+                    <option value="12" data-color="threeColor" data-size="2.9_128_296">2.9寸 (三色, SSD1619)</option>
+                    <option value="10" data-color="fourColor" data-size="3.1_300_300">3.1寸 (四色, JD79665)</option>
+                    <option value="18" data-color="threeColor" data-size="3.7_240_416">3.7寸 (三色, AI智屏壳)</option>
+                    <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A0)</option>
+                    <option value="15" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A1)</option>
+                    <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
+                    <option value="02" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, UC8176)</option>
+                    <option value="16" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SES_4.2BWR_GL340)</option>
+                    <option value="03" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
+                    <option value="04" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
+                    <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
+                    <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
+                    <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, SES7.4_GU140)</option>
+                    <option value="06" data-color="blackWhiteColor" data-size="7.5_800_480">7.5寸 (黑白, UC8179)</option>
+                    <option value="07" data-color="threeColor" data-size="7.5_800_480">7.5寸 (三色, UC8179)</option>
+                    <option value="0c" data-color="fourColor" data-size="7.5_800_480">7.5寸 (四色, JD79665)</option>
+                    <option value="08" data-color="blackWhiteColor" data-size="7.5_640_384">7.5寸低分 (黑白, UC8159)</option>
+                    <option value="09" data-color="threeColor" data-size="7.5_640_384">7.5寸低分 (三色, UC8159)</option>
+                    <option value="0a" data-color="blackWhiteColor" data-size="7.5_880_528">7.5寸HD (黑白, SSD1677)</option>
+                    <option value="0b" data-color="threeColor" data-size="7.5_880_528">7.5寸HD (三色, SSD1677)</option>
+    `;
+    var QuDong_Tsl0922 = `
+                    <option value="13" data-color="fourColor" data-size="3.98_768_552">3.98寸A0 (四色, JD79665)</option>
+                    <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸A1 (四色, JD79665)</option>
+                    <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
+                    <option value="03" data-color="threeColor" data-size="4.2_400_300"  selected>4.2寸 (三色, UC8176)</option>
+                    <option value="04" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
+                    <option value="02" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
+                    <option value="17" data-color="threeColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1683)</option>
+                    <option value="16" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1683)</option>
+                    <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
+                    <option value="28" data-color="blackWhiteColor" data-size="5.81_720_256">5.81寸 (黑白, 龙亭)</option>
+                    <option value="29" data-color="threeColor" data-size="5.81_720_256">5.81寸 (三色, 龙亭)</option>
+                    <option value="19" data-color="blackWhiteColor" data-size="5.83_648_480">5.83寸 (黑白, UC8179)</option>
+                    <option value="18" data-color="threeColor" data-size="5.83_648_480">5.83寸 (三色, UC8179)</option>
+                    <option value="0f" data-color="blackWhiteColor" data-size="5.83_648_480">5.83寸 (黑白, JD79686)</option>
+                    <option value="0e" data-color="threeColor" data-size="5.83_648_480">5.83寸 (三色, JD79686)</option>
+                    <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
+                    <option value="2a" data-color="blackWhiteColor" data-size="7.4_800_480">7.4寸 (黑白, 龙亭)</option>
+                    <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, 龙亭)</option>
+                    <option value="06" data-color="blackWhiteColor" data-size="7.5_800_480">7.5寸 (黑白, UC8179)</option>
+                    <option value="07" data-color="threeColor" data-size="7.5_800_480">7.5寸 (三色, UC8179)</option>
+                    <option value="0c" data-color="fourColor" data-size="7.5_800_480">7.5寸 (四色, JD79665)</option>
+                    <option value="08" data-color="blackWhiteColor" data-size="7.5_640_384">7.5寸低分 (黑白, UC8159)</option>
+                    <option value="09" data-color="threeColor" data-size="7.5_640_384">7.5寸低分 (三色, UC8159)</option>
+                    <option value="0a" data-color="blackWhiteColor" data-size="7.5_880_528">7.5寸HD (黑白, SSD1677)</option>
+                    <option value="0b" data-color="threeColor" data-size="7.5_880_528">7.5寸HD (三色, SSD1677)</option>
+                    <option value="11" data-color="threeColor" data-size="10.2_960_640">10.2寸 (三色, SSD1677)</option>
+                    <option value="12" data-color="blackWhiteColor" data-size="10.2_960_640">10.2寸 (黑白, SSD1677)</option>
+                    <option value="10" data-color="fourColor" data-size="10.2_960_640">10.2寸 (四色, SSD2677)</option>
+                    <option value="15" data-color="sixColor" data-size="7.3E6_800_480">7.3寸 (六色, Spectra 6)</option>
+    `;
+    if(QuDongMoShi == "Tls0922"){
+        epddriver.innerHTML = QuDong_Tsl0922;
+        QuDongSel.innerText = "切换东山驱动";
+        QuDongMoShi = "DongShan";
+    }else{
+        epddriver.innerHTML = QuDong_DongShan;
+        QuDongSel.innerText = "切换TSL驱动";
+        QuDongMoShi = "Tls0922";
+    }
+}
+QuDongMoShi = "DongShan";
+QuDongSelect();
+</script>
 </body>
 </html>
