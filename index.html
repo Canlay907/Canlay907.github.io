@@ -3,15 +3,15 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>墨水屏日历</title>
+    <title>墨水屏日历相册</title>
     <link rel="shortcut icon" type="image/png" href="favicon.png">
     <link rel="stylesheet" href="css/main.css?v=20251109">
 </head>
 <body>
 <div class="main">
-    <h3>墨水屏日历</h3>
+    <h3>-----☆墨水屏日历相册☆-------</h3>
     <fieldset>
-        <legend>蓝牙连接</legend>
+        <legend>☆墨水屏蓝牙设备连接☆</legend>
         <div class="flex-container">
             <div class="flex-group">
                 <button id="connectbutton" type="button" class="primary" onclick="preConnect()">连接</button>
@@ -27,7 +27,7 @@
         </div>
         <div class="flex-container debug driver-row">
             <div class="flex-group">
-                <label for="epddriver">驱动</label>
+                <label for="epddriver">墨水屏屏幕驱动</label>
                 <select id="epddriver" onchange="updateDitcherOptions()">
                 </select>
                 <label for="epdpins">引脚</label>
@@ -114,10 +114,10 @@
     </fieldset>
 
     <fieldset>
-        <legend>蓝牙传图</legend>
+        <legend>相册模式蓝牙传图</legend>
         <div class="flex-container options">
             <div class="flex-group debug">
-                <label for="canvasSize">画布尺寸:</label>
+                <label for="canvasSize">墨水屏尺寸选择:</label>
                 <select id="canvasSize" onchange="updateCanvasSize()">
                     <option value="1.54_152_152">1.54 (152x152)</option>
                     <option value="1.54_200_200">1.54 (200x200)</option>
@@ -515,11 +515,11 @@ function QuDongSelect(){
     `;
     if(QuDongMoShi == "Tls0922"){
         epddriver.innerHTML = QuDong_Tsl0922;
-        QuDongSel.innerText = "切换东山驱动";
+        QuDongSel.innerText = "切换东山大佬驱动";
         QuDongMoShi = "DongShan";
     }else{
         epddriver.innerHTML = QuDong_DongShan;
-        QuDongSel.innerText = "切换TSL驱动";
+        QuDongSel.innerText = "切换TSL0922驱动";
         QuDongMoShi = "Tls0922";
     }
 }
