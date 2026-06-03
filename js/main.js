@@ -15,6 +15,8 @@ let paintManager, cropManager;
 const APP_VERSION = '2.1.0';
 const APP_BUILD_DATE = '2026-03-31';
 
+let ditherBrightness = 1.0;    // 亮度系数
+
 // 蓝牙命令定义（与固件保持一致）
 const EpdCmd = {
     SET_PINS: 0x00,
@@ -52,7 +54,7 @@ const canvasSizes = [
     { name: '2.9_296_128', width: 296, height: 128 },
     { name: '2.9_128_296', width: 128, height: 296 },//盒马2.9寸
     { name: '2.9_384_168', width: 384, height: 168 },
-    { name: '3.1_300_300', width: 300, height: 300 },
+    { name: '3.1_300_300', width: 304, height: 304 },
     { name: '3.5_384_184', width: 384, height: 184 },
     { name: '3.7_240_416', width: 240, height: 416 },//3.7寸 第一代AI智屏壳
     { name: '3.7_416_240', width: 416, height: 240 },
@@ -860,6 +862,24 @@ function clearCanvas() {
 // ==================== 抖动处理（带防抖）====================
 let _pendingDitherJob = null;
 
+/**
+ * 调整亮度（整体偏移）
+ * @param {ImageData} imageData 图像数据
+ * @param {number} brightness  亮度系数，范围 0.5～1.5，1.0 表示不变
+ * @returns {ImageData} 处理后的图像数据
+ */
+function adjustBrightness(imageData, brightness) {
+    const data = imageData.data;
+    const offset = (brightness - 1) * 128;   // 亮度偏移量，范围 -64～+64
+    if (Math.abs(offset) < 0.5) return imageData;
+    for (let i = 0; i < data.length; i += 4) {
+        data[i]     = Math.min(255, Math.max(0, data[i]     + offset));
+        data[i + 1] = Math.min(255, Math.max(0, data[i + 1] + offset));
+        data[i + 2] = Math.min(255, Math.max(0, data[i + 2] + offset));
+    }
+    return imageData;
+}
+
 function scheduleConvertDithering() {
     if (_pendingDitherJob) {
         if (_pendingDitherJob.type === 'idle' && typeof cancelIdleCallback === 'function') {
@@ -898,10 +918,21 @@ function convertDithering() {
         paintManager.redrawLineSegments();
     }
 
-    const contrast = parseFloat(document.getElementById('ditherContrast').value);
+    // 1. 获取当前画布数据
     const current = ctx.getImageData(0, 0, canvas.width, canvas.height);
     let imgData = new ImageData(new Uint8ClampedArray(current.data), current.width, current.height);
-    adjustContrast(imgData, contrast);
+    // 2. 亮度调整
+    const brightness = parseFloat(document.getElementById('ditherBrightness').value);
+    if (!isNaN(brightness) && brightness !== 1.0) {
+        imgData = adjustBrightness(imgData, brightness);
+    }
+    // 3. 对比度调整
+    const contrast = parseFloat(document.getElementById('ditherContrast').value);
+    if (!isNaN(contrast)) {
+        imgData = adjustContrast(imgData, contrast);
+    }
+    //adjustContrast(imgData, contrast);
+    // 4. 抖动处理
     const alg = document.getElementById('ditherAlg').value;
     const strength = parseFloat(document.getElementById('ditherStrength').value);
     const mode = document.getElementById('ditherMode').value;
@@ -1530,6 +1561,16 @@ function initEventHandlers() {
                 importHolidayJsonFile(file);
                 holidayFile.value = '';
             }
+        });
+    }
+    // 亮度滑块
+    const brightnessSlider = document.getElementById('ditherBrightness');
+    const brightnessValue = document.getElementById('ditherBrightnessValue');
+    if (brightnessSlider && brightnessValue) {
+        brightnessSlider.addEventListener('input', (e) => {
+            ditherBrightness = parseFloat(e.target.value);
+            brightnessValue.innerText = ditherBrightness.toFixed(1);
+            applyDither();
         });
     }
 }
