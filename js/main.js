@@ -49,6 +49,7 @@ const canvasSizes = [
     { name: '2.13_212_104', width: 212, height: 104 },
     { name: '2.13_250_122', width: 250, height: 122 },
     { name: '2.13_128_250', width: 128, height: 250 },
+    { name: '2.66_152_296', width: 152, height: 296 },//52810单独的
     { name: '2.66_296_152', width: 296, height: 152 },
     { name: '2.8_152_296', width: 152, height: 296 },//四色2.8寸
     { name: '2.9_296_128', width: 296, height: 128 },
@@ -1509,6 +1510,170 @@ function initWifiEditor() {
     if (typeof scheduleWifiCanvasPreviewUpdate === 'function') scheduleWifiCanvasPreviewUpdate();
 }
 
+
+
+
+/**
+ * 驱动预设配置模块
+ * 说明：通过选择不同的预设，动态更新 epddriver 下拉列表，
+ *      并自动触发 updateDitcherOptions() 更新颜色模式/画布尺寸。
+ *      方便后续添加其他驱动配置，只需在 DRIVER_PRESETS 数组中增加一项即可。
+ */
+
+// 预设驱动选项模板（HTML 字符串）
+const DRIVER_PRESETS = [
+    {
+        id: "dongshan",
+        name: "东山驱动",
+        // 选项HTML（与原 QuDong_DongShan 完全一致）
+        optionsHtml: `
+                    <option value="1D" data-color="blackWhiteColor" data-size="1.54_152_152">1.54寸 (黑白低分, UC8176)</option>
+                    <option value="17" data-color="threeColor" data-size="1.54_200_200">1.54寸 (三色, UC8176)</option>
+                    <option value="18" data-color="blackWhiteColor" data-size="2.13_104_212">2.13寸低分(黑白, SSD1619)</option>
+                    <option value="19" data-color="threeColor" data-size="2.13_104_212">2.13寸低分(三色, SSD1619)</option>
+                    <option value="0e" data-color="blackWhiteColor" data-size="2.13_128_250">2.13寸 (黑白, SSD1619)</option>
+                    <option value="0f" data-color="threeColor" data-size="2.13_128_250">2.13寸 (三色, SSD1619)</option>
+                    <option value="13" data-color="fourColor" data-size="2.8_152_296">2.8寸 (四色, JD79668)</option>
+                    <option value="11" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1619)</option>
+                    <option value="12" data-color="threeColor" data-size="2.9_128_296">2.9寸 (三色, SSD1619)</option>
+                    <option value="1B" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1680)</option>
+                    <option value="10" data-color="fourColor" data-size="3.1_300_300">3.1寸 (四色, JD79665)</option>
+                    <option value="18" data-color="threeColor" data-size="3.7_240_416">3.7寸 (三色, AI智屏壳)</option>
+                    <option value="1C" data-color="fourColor" data-size="3.97_800_480">3.97寸 (四色, 方角四色屏)</option>
+                    <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A0)</option>
+                    <option value="15" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A1)</option>
+                    <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
+                    <option value="02" data-color="threeColor" data-size="4.2_400_300" selected>4.2寸 (三色, UC8176)</option>
+                    <option value="16" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SES_4.2BWR_GL340)</option>
+                    <option value="03" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
+                    <option value="04" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
+                    <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
+                    <option value="1E" data-color="blackWhiteColor" data-size="5.83_648_480">5.83寸 (黑白, JD79583)</option>
+                    <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
+                    <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, SES7.4_GU140)</option>
+                    <option value="06" data-color="blackWhiteColor" data-size="7.5_800_480">7.5寸 (黑白, UC8179)</option>
+                    <option value="07" data-color="threeColor" data-size="7.5_800_480">7.5寸 (三色, UC8179)</option>
+                    <option value="0c" data-color="fourColor" data-size="7.5_800_480">7.5寸 (四色, JD79665)</option>
+                    <option value="08" data-color="blackWhiteColor" data-size="7.5_640_384">7.5寸低分 (黑白, UC8159)</option>
+                    <option value="09" data-color="threeColor" data-size="7.5_640_384">7.5寸低分 (三色, UC8159)</option>
+                    <option value="0a" data-color="blackWhiteColor" data-size="7.5_880_528">7.5寸HD (黑白, SSD1677)</option>
+                    <option value="0b" data-color="threeColor" data-size="7.5_880_528">7.5寸HD (三色, SSD1677)</option>
+        `
+    },
+    {
+        id: "tsl0922",
+        name: "TSL0922驱动",
+        // 选项HTML（与原 QuDong_Tsl0922 完全一致）
+        optionsHtml: `
+                    <option value="13" data-color="fourColor" data-size="3.98_768_552">3.98寸A0 (四色, JD79665)</option>
+                    <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸A1 (四色, JD79665)</option>
+                    <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
+                    <option value="03" data-color="threeColor" data-size="4.2_400_300"  selected>4.2寸 (三色, UC8176)</option>
+                    <option value="04" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
+                    <option value="02" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
+                    <option value="17" data-color="threeColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1683)</option>
+                    <option value="16" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1683)</option>
+                    <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
+                    <option value="28" data-color="blackWhiteColor" data-size="5.81_720_256">5.81寸 (黑白, 龙亭)</option>
+                    <option value="29" data-color="threeColor" data-size="5.81_720_256">5.81寸 (三色, 龙亭)</option>
+                    <option value="19" data-color="blackWhiteColor" data-size="5.83_648_480">5.83寸 (黑白, UC8179)</option>
+                    <option value="18" data-color="threeColor" data-size="5.83_648_480">5.83寸 (三色, UC8179)</option>
+                    <option value="0f" data-color="blackWhiteColor" data-size="5.83_648_480">5.83寸 (黑白, JD79686)</option>
+                    <option value="0e" data-color="threeColor" data-size="5.83_648_480">5.83寸 (三色, JD79686)</option>
+                    <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
+                    <option value="2a" data-color="blackWhiteColor" data-size="7.4_800_480">7.4寸 (黑白, 龙亭)</option>
+                    <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, 龙亭)</option>
+                    <option value="06" data-color="blackWhiteColor" data-size="7.5_800_480">7.5寸 (黑白, UC8179)</option>
+                    <option value="07" data-color="threeColor" data-size="7.5_800_480">7.5寸 (三色, UC8179)</option>
+                    <option value="0c" data-color="fourColor" data-size="7.5_800_480">7.5寸 (四色, JD79665)</option>
+                    <option value="08" data-color="blackWhiteColor" data-size="7.5_640_384">7.5寸低分 (黑白, UC8159)</option>
+                    <option value="09" data-color="threeColor" data-size="7.5_640_384">7.5寸低分 (三色, UC8159)</option>
+                    <option value="0a" data-color="blackWhiteColor" data-size="7.5_880_528">7.5寸HD (黑白, SSD1677)</option>
+                    <option value="0b" data-color="threeColor" data-size="7.5_880_528">7.5寸HD (三色, SSD1677)</option>
+                    <option value="11" data-color="threeColor" data-size="10.2_960_640">10.2寸 (三色, SSD1677)</option>
+                    <option value="12" data-color="blackWhiteColor" data-size="10.2_960_640">10.2寸 (黑白, SSD1677)</option>
+                    <option value="10" data-color="fourColor" data-size="10.2_960_640">10.2寸 (四色, SSD2677)</option>
+                    <option value="15" data-color="sixColor" data-size="7.3E6_800_480">7.3寸 (六色, Spectra 6)</option>
+        `
+    }, 
+    // 👇 后续如需添加其他驱动预设，只需在此继续增加对象即可
+    {
+        id: "260OnlyOne",
+        name: "2.66寸52810专用",
+        optionsHtml: `
+                    <option value="01" data-color="threeColor" data-size="2.66_152_296" selected>2.66寸 (三色, SSD1680)</option>
+        `
+    }, 
+    {
+        id: "breeze4dev",
+        name: "breeze4dev驱动",
+        optionsHtml: `
+						<option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 黑白 (UC8176)</option>
+						<option value="02" data-color="threeColor" data-size="4.2_400_300">4.2寸 BWR (SSD1619)</option>
+						<option value="03" data-color="threeColor" data-size="4.2_400_300">4.2寸 BWR (UC8176)</option>
+						<option value="06" data-color="threeColor" data-size="2.13_250_122">2.13寸 三色 (SSD16xx)</option>
+						<option value="08" data-color="threeColor" data-size="2.13_250_122" selected>2.13寸 三色 CE (SSD16xx)</option>
+						<option value="07" data-color="threeColor" data-size="2.9_296_128">2.9寸 三色 (SSD16xx)</option>
+						<option value="09" data-color="threeColor" data-size="2.9_296_128">2.9寸 三色 CE (SSD16xx)</option>
+						<option value="0a" data-color="blackWhiteColor" data-size="2.13_212_104">2.13寸 黑白 (SSD16xx)</option>
+						<option value="0b" data-color="blackWhiteColor" data-size="2.13_212_104">2.13寸 黑白 CE (SSD16xx)</option>
+        `
+    }
+];
+
+/**
+ * 根据预设ID更新 epddriver 的下拉选项
+ * @param {string} presetId 预设ID（对应 DRIVER_PRESETS 中的 id）
+ */
+function applyDriverPreset(presetId) {
+    const preset = DRIVER_PRESETS.find(p => p.id === presetId);
+    if (!preset) return;
+    const epddriver = document.getElementById("epddriver");
+    if (!epddriver) return;
+    // 使用 innerHTML 动态生成驱动选项（保留原有方式）
+    epddriver.innerHTML = preset.optionsHtml;
+    // 触发 updateDitcherOptions() 同步颜色模式、画布尺寸等
+    if (typeof updateDitcherOptions === 'function') {
+        updateDitcherOptions();
+    }
+    // 可选：手动派发 change 事件以保证外部监听
+    epddriver.dispatchEvent(new Event('change'));
+}
+
+// 初始化驱动预设下拉选择器
+function initDriverPresetSelector() {
+    const container = document.getElementById("driverPreset");
+    if (!container) return;
+    // 构建选项
+    DRIVER_PRESETS.forEach(preset => {
+        const option = document.createElement("option");
+        option.value = preset.id;
+        option.textContent = preset.name;
+        container.appendChild(option);
+    });
+    // 默认选中“东山驱动”
+    container.value = "dongshan";
+    // 监听变化
+    container.addEventListener("change", (e) => {
+        applyDriverPreset(e.target.value);
+    });
+    // 立即应用默认预设
+    applyDriverPreset("dongshan");
+}
+/*
+// 页面加载完成后初始化
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initDriverPresetSelector);
+} else {
+    initDriverPresetSelector();
+}
+*/
+
+
+
+
+
+
 // ==================== 主入口 ====================
 document.body.onload = () => {
     textDecoder = null;
@@ -1573,6 +1738,7 @@ function initEventHandlers() {
             applyDither();
         });
     }
+    initDriverPresetSelector();
 }
 
 function checkDebugMode() {
