@@ -7,6 +7,16 @@
  */
 
 // ==================== 色板定义 ====================
+// 七色调色板 (Spectra 6 实际7色)
+const sevenColorPalette = [
+  { name: "黑色", r: 0, g: 0, b: 0, value: 0x00 },
+  { name: "白色", r: 255, g: 255, b: 255, value: 0x01 },
+  { name: "绿色", r: 41, g: 204, b: 20, value: 0x02 },
+  { name: "蓝色", r: 0, g: 0, b: 255, value: 0x03 },
+  { name: "红色", r: 255, g: 0, b: 0, value: 0x04 },
+  { name: "黄色", r: 255, g: 255, b: 0, value: 0x05 },
+  { name: "橙色", r: 255, g: 128, b: 0, value: 0x06 }
+];
 // 标准六色调色板（用于算法内部颜色匹配）
 // 固定的六色调色板
 const rgbPalette = [
@@ -35,6 +45,15 @@ const threeColorPalette = [
 
 // 墨水屏实际显示颜色（用于更精确的颜色匹配，解决偏红问题）
 const epdRealColors = {
+    sevenColor: [
+        { name: "黑色", realR: 30, realG: 30, realB: 30, r: 0, g: 0, b: 0, value: 0x00 },
+        { name: "白色", realR: 220, realG: 215, realB: 205, r: 255, g: 255, b: 255, value: 0x01 },
+        { name: "绿色", realR: 35, realG: 140, realB: 35, r: 41, g: 204, b: 20, value: 0x02 },
+        { name: "蓝色", realR: 30, realG: 40, realB: 140, r: 0, g: 0, b: 255, value: 0x03 },
+        { name: "红色", realR: 180, realG: 50, realB: 50, r: 255, g: 0, b: 0, value: 0x04 },
+        { name: "黄色", realR: 200, realG: 195, realB: 60, r: 255, g: 255, b: 0, value: 0x05 },
+        { name: "橙色", realR: 210, realG: 130, realB: 30, r: 255, g: 128, b: 0, value: 0x06 }
+    ], 
     sixColor: [
         { name: "黄色", realR: 200, realG: 195, realB: 60, r: 255, g: 255, b: 0, value: 0xE2 },
         { name: "绿色", realR: 35, realG: 140, realB: 35, r: 41, g: 204, b: 20, value: 0x96 },
@@ -126,7 +145,8 @@ for (let i = 0; i < 4096; i++) {
     _linearToSrgb[i] = Math.min(255, Math.max(0, Math.round(255 * (v > 0.0031308 ? 1.055 * Math.pow(v, 1 / 2.4) - 0.055 : 12.92 * v))));
 }
 
-function findClosestColor(r, g, b, mode) {
+//以前的, 还能用
+function findClosestColorOld(r, g, b, mode) {
   let palette;
 
   if (mode === 'fourColor') {
@@ -167,6 +187,59 @@ function findClosestColor(r, g, b, mode) {
   }
 
   return closestColor;
+}
+//新改的, 看着准确度更高
+function findClosestColor(r, g, b, mode) {
+  if (mode === 'sevenColor') {
+    const targetLab = rgbToLabRed(r, g, b);
+    let best = epdSevenColorWithLab[0];
+    let bestDist = Infinity;
+    for (let i = 0; i < epdSevenColorWithLab.length; i++) {
+      const c = epdSevenColorWithLab[i];
+      const dist = ciede2000(targetLab, c.lab);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = c;
+      }
+    }
+    return best;
+  } else if (mode === 'sixColor') {
+    const targetLab = rgbToLabRed(r, g, b);
+    let best = epdSixColorWithLab[0];
+    let bestDist = Infinity;
+    for (let i = 0; i < epdSixColorWithLab.length; i++) {
+      const c = epdSixColorWithLab[i];
+      const dist = ciede2000(targetLab, c.lab);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = c;
+      }
+    }
+    return best;
+  } else if (mode === 'fourColor') {
+    const targetLab = rgbToLabRed(r, g, b);
+    let best = epdFourColorWithLab[0];
+    let bestDist = Infinity;
+    for (let i = 0; i < epdFourColorWithLab.length; i++) {
+      const c = epdFourColorWithLab[i];
+      const dist = ciede2000(targetLab, c.lab);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = c;
+      }
+    }
+    return best;
+  } else if (mode === 'threeColor') {
+    // 优先红色检测
+    if (r > 120 && r > g * 1.5 && r > b * 1.5) {
+      return epdThreeColorWithLab.find(c => c.value === 0x02) || epdThreeColorWithLab[2];
+    }
+    const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+    return luminance < 128 ? epdThreeColorWithLab[0] : epdThreeColorWithLab[1];
+  } else { // blackWhite
+    const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+    return luminance < 140 ? { r:0,g:0,b:0,value:0 } : { r:255,g:255,b:255,value:1 };
+  }
 }
 
 /**
@@ -304,6 +377,7 @@ let epdFourColorWithLab = initPaletteLab(epdRealColors.fourColor, true);
 let epdThreeColorWithLab = initPaletteLab(epdRealColors.threeColor, true);
 let epdBWWithLab = initPaletteLab(epdRealColors.blackWhite, true);
 let epdSixColorWithLab = initPaletteLab(epdRealColors.sixColor, true);
+let epdSevenColorWithLab = initPaletteLab(epdRealColors.sevenColor, true);
 
 // 黑白阈值（基于 Lab 转换后的亮度）
 let _epdBWThreshold = (() => {
@@ -1915,7 +1989,19 @@ function decodeProcessedData(processedData, width, height, mode) {
   const imageData = new ImageData(width, height);
   const data = imageData.data;
 
-  if (mode === 'sixColor') {
+  if (mode === 'sevenColor') {
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const val = processedData[y * width + x];
+                const color = epdSevenColorWithLab.find(c => c.value === val) || epdSevenColorWithLab[1];
+                const idx = (y * width + x) * 4;
+                data[idx] = color.r;
+                data[idx+1] = color.g;
+                data[idx+2] = color.b;
+                data[idx+3] = 255;
+            }
+        }
+    } else if (mode === 'sixColor') {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const newIndex = (x * height) + (height - 1 - y);
@@ -1999,7 +2085,18 @@ function processImageData(imageData, mode) {
 
   let processedData;
 
-  if (mode === 'sixColor') {
+  if (mode === 'sevenColor') {
+        const result = new Uint8Array(width * height);
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const idx = (y * width + x) * 4;
+                const r = data[idx], g = data[idx+1], b = data[idx+2];
+                const closest = findClosestColor(r, g, b, 'sevenColor');
+                result[y * width + x] = closest.value;
+            }
+        }
+        return result;
+    } else if (mode === 'sixColor') {
     processedData = new Uint8Array(width * height);
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {

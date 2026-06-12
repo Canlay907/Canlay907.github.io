@@ -1,16 +1,15 @@
-
 <!doctype html>
 <html lang="zh">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>墨水屏日历-更新0611</title>
+    <title>墨水屏日历</title>
     <link rel="shortcut icon" type="image/png" href="favicon.png">
     <link rel="stylesheet" href="css/main.css?v=20251109">
 </head>
 <body>
 <div class="main">
-    <h3>墨水屏日历-更新0611</h3>
+    <h3>墨水屏日历</h3>
     <fieldset>
         <legend>蓝牙连接</legend>
         <div class="flex-container">
@@ -40,6 +39,44 @@
             </div>
         </div>
         <div class="log-container" id="log"></div>
+    </fieldset>
+    <!-- 新增：APP模式切换与A/B面选择 -->
+    <fieldset id="appModeFieldset">
+        <legend>设备模式</legend>
+        <div class="flex-container">
+            <div class="flex-group">
+                <label>当前协议:</label>
+                <span id="protocolStatus">未连接</span>
+            </div>
+            <div class="flex-group" id="abSelectGroup" style="display: none;">
+                <label for="abSelect">A/B面选择</label>
+                <select id="abSelect">
+                    <option value="1">A面</option>
+                    <option value="2">B面</option>
+                    <option value="3">A&B同显</option>
+                    <option value="7">A&B异显</option>
+                </select>
+            </div>
+            <div class="flex-group" id="compressOptionGroup" style="display: none;">
+                <label for="compressEnable">启用LZ77压缩</label>
+                <input type="checkbox" id="compressEnable" checked>
+            </div>
+            <div class="flex-group" id="ditherEnableGroup" style="display: none;">
+                <label for="ditherEnable">启用抖动(预处理)</label>
+                <input type="checkbox" id="ditherEnable" checked>
+            </div>
+        </div>
+        <div id="doubleImagePanel" style="display: none; margin-top: 10px;">
+            <!-- 在 doubleImagePanel 内部，紧跟在现有内容之后 -->
+            <div class="flex-container" style="margin-top: 10px;">
+                <div class="flex-group">
+                    <button id="syncToABtn" type="button" class="secondary">📋 从主画布同步到 A 面</button>
+                    <button id="syncToBBtn" type="button" class="secondary">📋 从主画布同步到 B 面</button>
+                    <span style="margin-left: 12px;">A面状态: <span id="aStatusLabel">未设置</span></span>
+                    <span style="margin-left: 8px;">B面状态: <span id="bStatusLabel">未设置</span></span>
+                </div>
+            </div>
+        </div>
     </fieldset>
 
     <fieldset>
@@ -76,16 +113,17 @@
             </div>
         </div>
         <div class="flex-container debug">
-            <div class="flex-group">
-                <label for="testTimestamp">测试时间戳:</label>
-                <input type="number" id="testTimestamp" placeholder="输入Unix时间戳" style="width: 160px;" oninput="updateTimestampInfo()">
-                <button type="button" class="secondary" onclick="setCurrentTimestamp()">当前时间</button>
-                <button type="button" class="secondary" onclick="addDays(1)">+1天</button>
-                <button type="button" class="secondary" onclick="addDays(-1)">-1天</button>
-                <button type="button" class="primary" onclick="testCalendarJump(1)">日历测试</button>
-                <button type="button" class="primary" onclick="testCalendarJump(2)">时钟测试</button>
-            </div>
-        </div>
+    <div class="flex-group">
+        <label for="testTimestamp">测试时间戳:</label>
+        <input type="number" id="testTimestamp" placeholder="输入Unix时间戳" style="width: 160px;" oninput="updateTimestampInfo()">
+        <button type="button" class="secondary" onclick="setCurrentTimestamp()">当前时间</button>
+        <button type="button" class="secondary" onclick="addDays(1)">+1天</button>
+        <button type="button" class="secondary" onclick="addDays(-1)">-1天</button>
+        <button type="button" class="primary" onclick="testCalendarJump(1)">日历测试</button>
+        <button type="button" class="primary" onclick="testCalendarJump(2)">时钟测试</button>
+        <button type="button" id="syncTimeOnlyBtn" class="primary">同步时间</button>
+    </div>
+</div>
         <div class="flex-container debug">
             <div class="flex-group">
                 <label id="timestampInfo" style="color: #666; font-size: 12px;"></label>
@@ -175,9 +213,12 @@
         <div class="status-bar"><b>状态：</b><span id="status"></span></div>
         <div class="flex-container">
             <div class="flex-group">
+                <button id="crop-rotate-btn" title="旋转图像 90°" class="secondary">旋转图像</button>
                 <button type="button" class="secondary debug" onclick="rotateCanvas()">旋转画布</button>
                 <button type="button" class="secondary" onclick="clearCanvas()">清除画布</button>
+                <button id="crop-reset-btn" title="重置图像 (重置缩放/平移)" class="secondary">重置图像</button>
                 <button type="button" class="secondary debug" onclick="downloadDataArray()">下载数组</button>
+                <button type="button" class="secondary debug" onclick="downloadImage()">下载图片</button>
                 <button type="button" class="secondary debug" onclick="uploadDataArray()">上传数组</button>
                 <button id="sendimgbutton" type="button" class="primary" onclick="sendimg()">发送图片</button>
             </div>
@@ -215,6 +256,7 @@
                             <option value="threeColor">三色(黑白红)</option>
                             <option value="fourColor">四色(黑白红黄)</option>
                             <option value="sixColor">六色(黑白红黄蓝绿)</option>
+                            <option value="sevenColor">七色(黑/白/红/黄/绿/蓝/橙) - Spectra 6</option>
                         </select>
                     </div>
                     <div class="flex-group">
@@ -436,6 +478,7 @@
     </fieldset>
 
     <div class="footer">
+    　　<div id="appModeStatusBar" style="display: none; margin: 8px 0; font-size: 12px; color: #666;"></div>
         <div class="links">
             <a id="debug-toggle" href="?debug=true">开发模式</a>
         </div>
@@ -459,6 +502,60 @@
 <script type="text/javascript" src="js/ble_transfer.js?v=20260202"></script>
 <script type="text/javascript" src="js/crop.js?v=20251109"></script>
 <script type="text/javascript" src="js/paint.js?v=20260131_2"></script>
+<script type="text/javascript" src="js/lz77.js?v=20260202"></script>
+<script type="text/javascript" src="js/epd_format.js?v=20251109"></script>
+<script type="text/javascript" src="js/app_protocol.js?v=20260131_2"></script>
 <script type="text/javascript" src="js/main.js?v=20260131_4"></script>
+<script type="text/javascript">
+function checkDebugModeDo(value) {
+    const link = document.getElementById('debug-toggle');
+    const debug = value;
+    if (debug) {
+        document.body.classList.add('dark-mode');
+        if (link) {
+            link.innerHTML = '正常模式';
+            link.setAttribute('href', window.location.pathname);
+        }
+        addLog("注意：开发模式功能已开启！不懂请不要随意修改，否则后果自负！");
+    } else {
+        document.body.classList.remove('dark-mode');
+        if (link) {
+            link.innerHTML = '开发模式';
+            link.setAttribute('href', window.location.pathname + '?debug=true');
+        }
+    }
+}
+// ==================== 主入口 ====================
+document.body.onload = () => {
+    textDecoder = null;
+    canvas = document.getElementById('canvas');
+    ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    paintManager = new PaintManager(canvas, ctx);
+    cropManager = new CropManager(canvas, ctx, paintManager);
+    paintManager.initPaintTools();
+    cropManager.initCropTools();
+
+    initEventHandlers();
+    updateButtonStatus();
+    checkDebugModeDo(true);
+
+    // 延迟初始化编辑器，确保 DOM 完全加载
+    const initEditors = () => {
+        initImageEditor();
+        initScheduleEditor();
+        initTodoEditor();
+        initCardEditor();
+        initWifiEditor();
+    };
+    if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(initEditors, { timeout: 200 });
+    } else {
+        setTimeout(initEditors, 0);
+    }
+};
+</script>
 </body>
 </html>

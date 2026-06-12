@@ -354,5 +354,100 @@ class CropManager {
                 this.cancelCrop();
             });
         }
+        
+        // 重置按钮（全局监听）
+        const resetBtn = document.getElementById('crop-reset-btn');
+        if (resetBtn) {
+            resetBtn.removeEventListener('click', this.resetCropHandler); // 避免重复
+            this.resetCropHandler = (e) => {
+                e.preventDefault();
+                this.resetCrop();
+            };
+            resetBtn.addEventListener('click', this.resetCropHandler);
+        }
+
+        // 旋转按钮（全局监听）
+        const rotateBtn = document.getElementById('crop-rotate-btn');
+        if (rotateBtn) {
+            rotateBtn.removeEventListener('click', this.rotateCropHandler);
+            this.rotateCropHandler = (e) => {
+                e.preventDefault();
+                this.rotateCropImage();
+            };
+            rotateBtn.addEventListener('click', this.rotateCropHandler);
+        }
+    }
+    
+    
+    /**
+     * 重置裁剪视图或重新进入裁剪模式
+     * - 如果当前在裁剪模式：重置缩放和平移
+     * - 如果不在裁剪模式但有有效图片文件：重新初始化裁剪模式
+     * - 否则提示用户先上传图片
+     */
+    resetCrop() {
+        const imageFile = document.getElementById('imageFile');
+        if (!imageFile || !imageFile.files.length) {
+            addLog("没有图片文件，无法重置裁剪");
+            return;
+        }
+
+        if (this.isCropMode()) {
+            // 已在裁剪模式，重置视图
+            this.backgroundZoom = 1;
+            this.backgroundPanX = 0;
+            this.backgroundPanY = 0;
+            this.updateBackgroundTransform();
+            setCanvasTitle("裁剪模式: 已重置视图（缩放归零）");
+            addLog("✅ 裁剪视图已重置");
+        } else {
+            // 不在裁剪模式，尝试重新进入裁剪模式
+            addLog("重新进入裁剪模式...");
+            // 可选：先退出可能残留的裁剪状态
+            if (this.isCropMode()) this.exitCropMode();
+            this.initializeCrop();  // 重新加载图片并进入裁剪模式
+        }
+    }
+
+    /**
+     * 旋转裁剪图像 90 度（基于原始文件重新旋转后进入裁剪模式）
+     */
+    async rotateCropImage() {
+        if (!this.isCropMode()) {
+            alert("请先进入裁剪模式（上传图片比例不匹配时会自动进入）");
+            return;
+        }
+        const imageFile = document.getElementById('imageFile');
+        if (!imageFile.files.length) return;
+    
+        // 读取原始图片
+        const file = imageFile.files[0];
+        const img = await new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => resolve(image);
+            image.onerror = reject;
+            image.src = URL.createObjectURL(file);
+        });
+    
+        // 创建离屏 canvas 旋转 90 度
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = img.height;
+        offCanvas.height = img.width;
+        const offCtx = offCanvas.getContext('2d');
+        offCtx.translate(offCanvas.width / 2, offCanvas.height / 2);
+        offCtx.rotate(90 * Math.PI / 180);
+        offCtx.drawImage(img, -img.width / 2, -img.height / 2);
+    
+        // 将旋转后的图片转为 Blob 并替换文件 input
+        const blob = await new Promise(resolve => offCanvas.toBlob(resolve, 'image/png'));
+        const newFile = new File([blob], file.name, { type: 'image/png' });
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(newFile);
+        imageFile.files = dataTransfer.files;
+    
+        // 重新初始化裁剪模式
+        this.exitCropMode();
+        this.initializeCrop();
+        addLog("✅ 图像已旋转 90°，请继续裁剪");
     }
 }
