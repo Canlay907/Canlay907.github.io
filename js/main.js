@@ -437,8 +437,12 @@ async function sendimgAppMode() {
         }
     } else {
         // 单面模式（A面显示，B面忽略）
-        if (!sourceImageDataA) {
+        if(epdIndex === 1 && !sourceImageDataA){
             alert("请先同步或上传 A 面内容！");
+            return;
+        }
+        if (epdIndex === 2 && !sourceImageDataB) {
+            alert("请先同步或上传 B 面内容！");
             return;
         }
     }
@@ -2016,14 +2020,14 @@ const DRIVER_PRESETS = [
                     <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A0)</option>
                     <option value="15" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A1)</option>
                     <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
-                    <option value="02" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, UC8176)</option>
+                    <option value="02" data-color="threeColor" data-size="4.2_400_300" selected>4.2寸 (三色, UC8176)</option>
                     <option value="16" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SES_4.2BWR_GL340)</option>
                     <option value="03" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
                     <option value="04" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
                     <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
                     <option value="1E" data-color="blackWhiteColor" data-size="5.83_648_480">5.83寸 (黑白, JD79583)</option>
                     <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
-                    <option value="FF" data-color="sevenColor" data-size="7.3E6_800_480" selected>7.3寸 (七色, Spectra 6)</option>
+                    <option value="FF" data-color="sevenColor" data-size="7.3E6_800_480">7.3寸 (七色, Spectra 6)</option>
                     <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, SES7.4_GU140)</option>
                     <option value="06" data-color="blackWhiteColor" data-size="7.5_800_480">7.5寸 (黑白, UC8179)</option>
                     <option value="07" data-color="threeColor" data-size="7.5_800_480">7.5寸 (三色, UC8179)</option>
