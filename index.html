@@ -3,13 +3,13 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>墨水屏日历</title>
+    <title>墨水屏日历-0614</title>
     <link rel="shortcut icon" type="image/png" href="favicon.png">
     <link rel="stylesheet" href="css/main.css?v=20251109">
 </head>
 <body>
 <div class="main">
-    <h3>墨水屏日历</h3>
+    <h3>墨水屏日历-0614</h3>
     <fieldset>
         <legend>蓝牙连接</legend>
         <div class="flex-container">
@@ -268,7 +268,7 @@
                             <option value="twoRowSierra">Two-Row Sierra (两行)</option>
                             <option value="ostromoukhov">Ostromoukhov (自适应简化)</option>
                             <option value="linearLightSierra">Linear Light Sierra (线性光优化)</option>
-                            <option value="floydSteinberg">Floyd-Steinberg</option>
+                            <option value="floydSteinberg" selected>Floyd-Steinberg</option>
                             <option value="atkinson">Atkinson</option>
                             <option value="bayer">Bayer</option>
                             <option value="stucki">Stucki</option>
@@ -478,10 +478,13 @@
     </fieldset>
 
     <div class="footer">
-    　　<div id="appModeStatusBar" style="display: none; margin: 8px 0; font-size: 12px; color: #666;"></div>
-        <div class="links">
-            <a id="debug-toggle" href="?debug=true">开发模式</a>
-        </div>
+    <div id="appModeStatusBar" style="display: none; margin: 8px 0; font-size: 12px; color: #666;"></div>
+        <span class="copy">&copy; 2025 tsl0922.</span>
+        <span class="links">
+            <a href="https://github.com/tsl0922/EPD-nRF5">Github</a>
+            <a href="https://qm.qq.com/q/SckzhfDxuu" onclick="return confirm('本群是此开源固件作者的技术交流群\n如果你购买了成品，请找卖家提供售后！')">交流群</a>
+            <a href="?debug=true" id="debug-toggle">开发模式</a>
+        </span>
     </div>
 </div>
 
@@ -514,14 +517,12 @@ function checkDebugModeDo(value) {
         document.body.classList.add('dark-mode');
         if (link) {
             link.innerHTML = '正常模式';
-            link.setAttribute('href', window.location.pathname);
         }
         addLog("注意：开发模式功能已开启！不懂请不要随意修改，否则后果自负！");
     } else {
         document.body.classList.remove('dark-mode');
         if (link) {
             link.innerHTML = '开发模式';
-            link.setAttribute('href', window.location.pathname + '?debug=true');
         }
     }
 }
