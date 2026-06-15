@@ -2020,7 +2020,7 @@ const DRIVER_PRESETS = [
         name: "东山驱动",
         // 选项HTML（与原 QuDong_DongShan 完全一致）
         optionsHtml: `
-                    <option value="1D" data-color="blackWhiteColor" data-size="1.54_152_152">1.54寸 (黑白低分, UC8176)</option>
+                    <option value="1d" data-color="blackWhiteColor" data-size="1.54_152_152">1.54寸 (黑白低分, UC8176)</option>
                     <option value="17" data-color="threeColor" data-size="1.54_200_200">1.54寸 (三色, UC8176)</option>
                     <option value="18" data-color="blackWhiteColor" data-size="2.13_104_212">2.13寸低分(黑白, SSD1619)</option>
                     <option value="19" data-color="threeColor" data-size="2.13_104_212">2.13寸低分(三色, SSD1619)</option>
@@ -2029,10 +2029,10 @@ const DRIVER_PRESETS = [
                     <option value="13" data-color="fourColor" data-size="2.8_152_296">2.8寸 (四色, JD79668)</option>
                     <option value="11" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1619)</option>
                     <option value="12" data-color="threeColor" data-size="2.9_128_296">2.9寸 (三色, SSD1619)</option>
-                    <option value="1B" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1680)</option>
+                    <option value="1b" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1680)</option>
                     <option value="10" data-color="fourColor" data-size="3.1_300_300">3.1寸 (四色, JD79665)</option>
                     <option value="18" data-color="threeColor" data-size="3.7_240_416">3.7寸 (三色, AI智屏壳)</option>
-                    <option value="1C" data-color="fourColor" data-size="3.97_800_480">3.97寸 (四色, 方角四色屏)</option>
+                    <option value="1c" data-color="fourColor" data-size="3.97_800_480">3.97寸 (四色, 方角四色屏)</option>
                     <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A0)</option>
                     <option value="15" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A1)</option>
                     <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
@@ -2041,7 +2041,7 @@ const DRIVER_PRESETS = [
                     <option value="03" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
                     <option value="04" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
                     <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
-                    <option value="1E" data-color="blackWhiteColor" data-size="5.83_648_480">5.83寸 (黑白, JD79583)</option>
+                    <option value="1e" data-color="blackWhiteColor" data-size="5.83_648_480">5.83寸 (黑白, JD79583)</option>
                     <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
                     <option value="FF" data-color="sevenColor" data-size="7.3E6_800_480">7.3寸 (七色, Spectra 6)</option>
                     <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, SES7.4_GU140)</option>
