@@ -94,6 +94,7 @@ let imageDataA = null, imageDataB = null, currentImageDataForApp = null;
 // APP 模式专用：存储从主画布同步过来的图像数据
 let storedImageDataA = null;   // ImageData 对象
 let storedImageDataB = null;
+let needDouDong = false;
 
 // ==================== 工具函数 ====================
 function hex2bytes(hex) {
@@ -409,6 +410,7 @@ async function sendimgAppMode() {
         offCanvas.height = height;
         const offCtx = offCanvas.getContext('2d');
         offCtx.drawImage(img, 0, 0, width, height);
+        needDouDong = true;
         return offCtx.getImageData(0, 0, width, height);
     }
 
@@ -423,7 +425,17 @@ async function sendimgAppMode() {
     }
 
     // 根据模式检查数据完整性
-    if (epdIndex === 3) {
+    if(epdIndex === 1){
+        if (!sourceImageDataA) {
+            alert("请先同步或上传 A 面内容！");
+            return;
+        }
+     }else if (epdIndex === 2) {
+        if (!sourceImageDataB) {
+            alert("请先同步或上传 B 面内容！");
+            return;
+        }
+     }else if (epdIndex === 3) {
         // A&B 同显：只需 A 面
         if (!sourceImageDataA) {
             alert("请先通过「从主画布同步到 A 面」上传 A 面内容，或选择 A 面图片文件！");
@@ -436,21 +448,15 @@ async function sendimgAppMode() {
             return;
         }
     } else {
-        // 单面模式（A面显示，B面忽略）
-        if(epdIndex === 1 && !sourceImageDataA){
-            alert("请先同步或上传 A 面内容！");
-            return;
-        }
-        if (epdIndex === 2 && !sourceImageDataB) {
-            alert("请先同步或上传 B 面内容！");
-            return;
-        }
+        // 异常模式（A面显示，B面忽略）
+        alert("请先同步或上传 A 面内容！");
+        return;
     }
 
     // 对每个面的图像数据进行抖动预处理（如果启用）
     let processedImageDataA = sourceImageDataA;
     let processedImageDataB = sourceImageDataB;
-    if (ditherEnabled) {
+    if (ditherEnabled && needDouDong) {
         addLog("🎨 正在对图像进行抖动预处理...");
         const contrast = parseFloat(document.getElementById('ditherContrast').value);
         const brightness = parseFloat(document.getElementById('ditherBrightness').value);
@@ -479,14 +485,14 @@ async function sendimgAppMode() {
     // 转换为设备数据格式
     let dataA = null, dataB = null;
     try {
-        dataA = EpdFormat.convertWithType(epdTypeVal, canvas.width, canvas.height, processedImageDataA, findClosestColor);
+        if (epdIndex === 1) dataA = EpdFormat.convertWithType(epdTypeVal, canvas.width, canvas.height, processedImageDataA, findClosestColor);
     } catch (e) {
         addLog("❌ A 面格式转换失败: " + e.message);
         return;
     }
     if (processedImageDataB) {
         try {
-            dataB = EpdFormat.convertWithType(epdTypeVal, canvas.width, canvas.height, processedImageDataB, findClosestColor);
+            if (epdIndex === 2) dataB = EpdFormat.convertWithType(epdTypeVal, canvas.width, canvas.height, processedImageDataB, findClosestColor);
         } catch (e) {
             addLog("❌ B 面格式转换失败: " + e.message);
             return;
@@ -494,20 +500,26 @@ async function sendimgAppMode() {
     }
 
     let finalData = null;
-    if (epdIndex === 3) {
-        // 同显：只用 A 面数据
-        finalData = dataA;
-        addLog(`同显模式：发送 A 面数据，长度 ${dataA.length} 字节`);
-    } else if (epdIndex === 7) {
-        // 异显：拼接 A 面 + B 面
-        finalData = new Uint8Array(dataA.length + dataB.length);
-        finalData.set(dataA, 0);
-        finalData.set(dataB, dataA.length);
-        addLog(`异显模式：发送 A+B 面数据，总长度 ${finalData.length} 字节`);
-    } else {
-        // 其他值（1 或 2）默认为单面显示 A 面
-        finalData = dataA;
-        addLog(`单面模式：发送 A 面数据，长度 ${dataA.length} 字节`);
+    if (epdIndex === 1) {
+    	finalData = dataA;
+        addLog(`单面模式（A面）：发送 A 面数据，长度 ${dataA.length} 字节`);
+     } else if (epdIndex === 2) {
+     	finalData = dataB;
+         addLog(`单面模式（B面）：发送 B 面数据，长度 ${dataB.length} 字节`);
+     } else if (epdIndex === 3) {
+      	// 同显：只用 A 面数据
+          finalData = dataA;
+          addLog(`同显模式：发送 A 面数据，长度 ${dataA.length} 字节`);
+     } else if (epdIndex === 7) {
+         // 异显：拼接 A 面 + B 面
+         finalData = new Uint8Array(dataA.length + dataB.length);
+         finalData.set(dataA, 0);
+         finalData.set(dataB, dataA.length);
+         addLog(`异显模式：发送 A+B 面数据，总长度 ${finalData.length} 字节`);
+     } else {
+         // 选择模式异常了默认为单面显示 A 面
+         finalData = dataA;
+         addLog(`选择异常模式：发送 A 面数据，长度 ${dataA.length} 字节`);
     }
 
     if (!finalData) {
@@ -1188,6 +1200,7 @@ function updateImage() {
         }
     };
     img.src = URL.createObjectURL(fileInput.files[0]);
+    needDouDong = true;
 }
 
 function updateCanvasSize() {
@@ -1236,6 +1249,7 @@ function clearCanvas() {
         if (cropManager.isCropMode()) cropManager.exitCropMode();
         paintManager.saveToHistory();
     }
+    needDouDong = true;
     return true;
 }
 
@@ -1312,11 +1326,13 @@ function syncCurrentCanvasToSide(side) {
     if (side === 'A') {
         storedImageDataA = imageData;
         document.getElementById('aStatusLabel').innerText = `已同步 (${canvas.width}x${canvas.height})`;
+        needDouDong = false;
         addLog(`✅ 已将当前画布内容同步到 A 面（尺寸 ${canvas.width}x${canvas.height}）`);
         // 可选：更新预览（如果用户勾选了“实时预览”）
     } else {
         storedImageDataB = imageData;
         document.getElementById('bStatusLabel').innerText = `已同步 (${canvas.width}x${canvas.height})`;
+        needDouDong = false;
         addLog(`✅ 已将当前画布内容同步到 B 面（尺寸 ${canvas.width}x${canvas.height}）`);
     }
     // 更新底部协议状态栏中的 A/B 面状态
@@ -2255,7 +2271,7 @@ function initEventHandlers() {
             // 重新检查协议UI，强制重绘工具栏
             updateUIBasedOnProtocol();
             // 若当前有画板，重绘一次确保光标等正常
-            if (paintManager) paintManager.redrawAll();
+            //if (paintManager) paintManager.redrawAll();
         }
     });
     // 在 initEventHandlers 末尾添加
