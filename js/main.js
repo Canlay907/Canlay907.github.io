@@ -94,7 +94,6 @@ let imageDataA = null, imageDataB = null, currentImageDataForApp = null;
 // APP 模式专用：存储从主画布同步过来的图像数据
 let storedImageDataA = null;   // ImageData 对象
 let storedImageDataB = null;
-let needDouDong = false;
 
 // ==================== 工具函数 ====================
 function hex2bytes(hex) {
@@ -404,145 +403,93 @@ async function loadImageFromFile(file) {
     });
 }
 
+
 async function sendimgAppMode() {
     const epdIndex = parseInt(document.getElementById('abSelect')?.value || '1');
-    const ditherEnabled = document.getElementById('ditherEnable')?.checked || false;
     const compressEnabled = document.getElementById('compressEnable')?.checked || false;
     const epdTypeVal = 0x06;  // 七色屏固定
 
-    // 获取 A 面原始数据（优先使用同步数据，否则从文件读取）
-    let sourceImageDataA = storedImageDataA;
-    let sourceImageDataB = storedImageDataB;
+    addLog(`🔄 APP模式发送开始 (模式: ${epdIndex})`);
 
-    const fileA = document.getElementById('imageFileA')?.files[0];
-    const fileB = document.getElementById('imageFileB')?.files[0];
-
-    // 辅助函数：从文件加载 ImageData
-    async function loadImageDataFromFile(file, width, height) {
-        const img = await loadImageFromFile(file);
-        const offCanvas = document.createElement('canvas');
-        offCanvas.width = width;
-        offCanvas.height = height;
-        const offCtx = offCanvas.getContext('2d');
-        offCtx.drawImage(img, 0, 0, width, height);
-        needDouDong = true;
-        return offCtx.getImageData(0, 0, width, height);
-    }
-
-    // 若没有同步数据但有文件，则从文件加载
-    if (!sourceImageDataA && fileA) {
-        sourceImageDataA = await loadImageDataFromFile(fileA, canvas.width, canvas.height);
-        addLog("📁 从 A 面文件加载图片");
-    }
-    if (!sourceImageDataB && fileB && (epdIndex === 7)) {
-        sourceImageDataB = await loadImageDataFromFile(fileB, canvas.width, canvas.height);
-        addLog("📁 从 B 面文件加载图片");
-    }
-
-    // 根据模式检查数据完整性
-    if(epdIndex === 1){
-        if (!sourceImageDataA) {
-            alert("请先同步或上传 A 面内容！");
+    // 数据存在性检查（严格按照您的逻辑）
+    if (epdIndex === 1) { // A面
+        if (!storedImageDataA) {
+            addLog("❌ A面数据为空，请先点击「从主画布同步到 A 面」");
             return;
         }
-     }else if (epdIndex === 2) {
-        if (!sourceImageDataB) {
-            alert("请先同步或上传 B 面内容！");
+    } else if (epdIndex === 2) { // B面
+        if (!storedImageDataB) {
+            addLog("❌ B面数据为空，请先点击「从主画布同步到 B 面」");
             return;
         }
-     }else if (epdIndex === 3) {
-        // A&B 同显：只需 A 面
-        if (!sourceImageDataA) {
-            alert("请先通过「从主画布同步到 A 面」上传 A 面内容，或选择 A 面图片文件！");
+    } else if (epdIndex === 3) { // A&B同显
+        if (!storedImageDataA) {
+            addLog("❌ A面数据为空，请先点击「从主画布同步到 A 面」");
             return;
         }
-    } else if (epdIndex === 7) {
-        // A&B 异显：需要 A 面和 B 面
-        if (!sourceImageDataA || !sourceImageDataB) {
-            alert("AB 异显模式需要同时提供 A 面和 B 面内容！\n请分别同步或上传两张图片。");
+    } else if (epdIndex === 7) { // A&B异显
+        if (!storedImageDataA || !storedImageDataB) {
+            addLog("❌ AB异显模式需要同时具备A面和B面数据，请分别同步");
             return;
         }
     } else {
-        // 异常模式（A面显示，B面忽略）
-        alert("请先同步或上传 A 面内容！");
-        return;
-    }
-
-    // 对每个面的图像数据进行抖动预处理（如果启用）
-    let processedImageDataA = sourceImageDataA;
-    let processedImageDataB = sourceImageDataB;
-    if (ditherEnabled && needDouDong) {
-        addLog("🎨 正在对图像进行抖动预处理...");
-        const contrast = parseFloat(document.getElementById('ditherContrast').value);
-        const brightness = parseFloat(document.getElementById('ditherBrightness').value);
-        const alg = document.getElementById('ditherAlg').value;
-        const strength = parseFloat(document.getElementById('ditherStrength').value);
-        const colorMode = document.getElementById('ditherMode').value;
-        
-        // 对 A 面处理
-        let tempA = new ImageData(new Uint8ClampedArray(sourceImageDataA.data), canvas.width, canvas.height);
-        if (!isNaN(contrast)) tempA = adjustContrast(tempA, contrast);
-        if (!isNaN(brightness) && brightness !== 1.0) tempA = adjustBrightness(tempA, brightness);
-        if (alg !== 'none') tempA = ditherImage(tempA, alg, strength, colorMode);
-        processedImageDataA = tempA;
-        
-        // 对 B 面（若有）
-        if (sourceImageDataB) {
-            let tempB = new ImageData(new Uint8ClampedArray(sourceImageDataB.data), canvas.width, canvas.height);
-            if (!isNaN(contrast)) tempB = adjustContrast(tempB, contrast);
-            if (!isNaN(brightness) && brightness !== 1.0) tempB = adjustBrightness(tempB, brightness);
-            if (alg !== 'none') tempB = ditherImage(tempB, alg, strength, colorMode);
-            processedImageDataB = tempB;
-        }
-        addLog("✅ 抖动预处理完成");
-    }
-
-    // 转换为设备数据格式
-    let dataA = null, dataB = null;
-    try {
-        if (epdIndex === 1) dataA = EpdFormat.convertWithType(epdTypeVal, canvas.width, canvas.height, processedImageDataA, findClosestColor);
-    } catch (e) {
-        addLog("❌ A 面格式转换失败: " + e.message);
-        return;
-    }
-    if (processedImageDataB) {
-        try {
-            if (epdIndex === 2) dataB = EpdFormat.convertWithType(epdTypeVal, canvas.width, canvas.height, processedImageDataB, findClosestColor);
-        } catch (e) {
-            addLog("❌ B 面格式转换失败: " + e.message);
+        addLog("⚠️ 未知模式，默认为A面");
+        if (!storedImageDataA) {
+            addLog("❌ A面数据为空，请先同步A面");
             return;
         }
     }
 
-    let finalData = null;
-    if (epdIndex === 1) {
-    	finalData = dataA;
-        addLog(`单面模式（A面）：发送 A 面数据，长度 ${dataA.length} 字节`);
-     } else if (epdIndex === 2) {
-     	finalData = dataB;
-         addLog(`单面模式（B面）：发送 B 面数据，长度 ${dataB.length} 字节`);
-     } else if (epdIndex === 3) {
-      	// 同显：只用 A 面数据
-          finalData = dataA;
-          addLog(`同显模式：发送 A 面数据，长度 ${dataA.length} 字节`);
-     } else if (epdIndex === 7) {
-         // 异显：拼接 A 面 + B 面
-         finalData = new Uint8Array(dataA.length + dataB.length);
-         finalData.set(dataA, 0);
-         finalData.set(dataB, dataA.length);
-         addLog(`异显模式：发送 A+B 面数据，总长度 ${finalData.length} 字节`);
-     } else {
-         // 选择模式异常了默认为单面显示 A 面
-         finalData = dataA;
-         addLog(`选择异常模式：发送 A 面数据，长度 ${dataA.length} 字节`);
-    }
+    // 直接使用已同步的数据（已经过抖动处理）
+    const sourceImageDataA = storedImageDataA;
+    const sourceImageDataB = storedImageDataB;
 
-    if (!finalData) {
-        addLog("❌ 未生成有效的设备数据，请检查图像内容。");
+    // 转换为设备数据格式（无需再次抖动）
+    let dataA = null, dataB = null;
+    try {
+        if (sourceImageDataA) {
+            dataA = EpdFormat.convertWithType(epdTypeVal, canvas.width, canvas.height, sourceImageDataA, findClosestColor);
+        }
+        if (sourceImageDataB) {
+            dataB = EpdFormat.convertWithType(epdTypeVal, canvas.width, canvas.height, sourceImageDataB, findClosestColor);
+        }
+    } catch (e) {
+        addLog("❌ 格式转换失败: " + e.message);
+        console.error(e);
         return;
     }
 
-    // 发送
+    // 根据模式组合最终数据
+    let finalData = null;
+    if (epdIndex === 1) {
+        finalData = dataA;
+        addLog(`单面模式（A面）：发送 A 面数据，长度 ${dataA ? dataA.length : 0} 字节`);
+    } else if (epdIndex === 2) {
+        finalData = dataB;
+        addLog(`单面模式（B面）：发送 B 面数据，长度 ${dataB ? dataB.length : 0} 字节`);
+    } else if (epdIndex === 3) {
+        finalData = dataA;
+        addLog(`同显模式：发送 A 面数据，长度 ${dataA ? dataA.length : 0} 字节`);
+    } else if (epdIndex === 7) {
+        if (!dataA || !dataB) {
+            addLog("❌ 异显模式数据转换失败，缺少A或B面数据");
+            return;
+        }
+        finalData = new Uint8Array(dataA.length + dataB.length);
+        finalData.set(dataA, 0);
+        finalData.set(dataB, dataA.length);
+        addLog(`异显模式：发送 A+B 面数据，总长度 ${finalData.length} 字节`);
+    } else {
+        addLog("⚠️ 未知模式，默认发送A面");
+        finalData = dataA;
+    }
+
+    if (!finalData) {
+        addLog("❌ 未生成有效的设备数据，请检查图像内容");
+        return;
+    }
+
+    // 发送图片
     startTime = Date.now();
     const statusEl = document.getElementById("status");
     statusEl.parentElement.style.display = "block";
@@ -866,7 +813,7 @@ function disconnect() {
 // ==================== 根据协议显示/隐藏功能区 ====================
 function updateUIBasedOnProtocol() {
     const webOnlyIds = ['calendarmodebutton','clockmodebutton','clearscreenbutton','syncholidaybutton','importholidaybutton','holidayhelpbutton','testTimestamp','testYear','testMonth'];
-    const appOnlyIds = ['abSelectGroup','compressOptionGroup','ditherEnableGroup','doubleImagePanel'];
+    const appOnlyIds = ['abSelectGroup','compressOptionGroup','doubleImagePanel'];
     const protocolSpan = document.getElementById('protocolStatus');
     if (protocolSpan) {
         if (appModeEnabled) {
@@ -979,8 +926,8 @@ async function preConnect(useFilter = false, forceNew = false) {
         ] };
         if (useFilter && filterValue && filterValue.length > 0) {
             const prefix = filterValue.toUpperCase();
-            options.filters = [{ namePrefix: 'NRF_EPD_' + prefix }, { namePrefix: 'EPD_' + prefix }];
-            addLog(`按名称过滤: NRF_EPD_${prefix} 或 EPD_${prefix}`);
+            options.filters = [{ namePrefix: 'NRF_EPD_' + prefix }, { namePrefix: 'EPD_' + prefix },{ namePrefix: 'YSBadge2'}];
+            addLog(`按名称过滤: NRF_EPD_${prefix} 或 EPD_${prefix} 或 YSBadge2`);
         } else {
         	options.acceptAllDevices = true;
         }
@@ -1246,7 +1193,6 @@ function updateImage() {
         }
     };
     img.src = URL.createObjectURL(fileInput.files[0]);
-    needDouDong = true;
 }
 
 function updateCanvasSize() {
@@ -1295,7 +1241,6 @@ function clearCanvas() {
         if (cropManager.isCropMode()) cropManager.exitCropMode();
         paintManager.saveToHistory();
     }
-    needDouDong = true;
     return true;
 }
 
@@ -1372,13 +1317,11 @@ function syncCurrentCanvasToSide(side) {
     if (side === 'A') {
         storedImageDataA = imageData;
         document.getElementById('aStatusLabel').innerText = `已同步 (${canvas.width}x${canvas.height})`;
-        needDouDong = false;
         addLog(`✅ 已将当前画布内容同步到 A 面（尺寸 ${canvas.width}x${canvas.height}）`);
         // 可选：更新预览（如果用户勾选了“实时预览”）
     } else {
         storedImageDataB = imageData;
         document.getElementById('bStatusLabel').innerText = `已同步 (${canvas.width}x${canvas.height})`;
-        needDouDong = false;
         addLog(`✅ 已将当前画布内容同步到 B 面（尺寸 ${canvas.width}x${canvas.height}）`);
     }
     // 更新底部协议状态栏中的 A/B 面状态
@@ -2068,8 +2011,7 @@ const DRIVER_PRESETS = [
         optionsHtml: `
                     <option value="1d" data-color="blackWhiteColor" data-size="1.54_152_152">1.54寸 (黑白低分, UC8176)</option>
                     <option value="17" data-color="threeColor" data-size="1.54_200_200">1.54寸 (三色, UC8176)</option>
-                    <option value="18" data-color="blackWhiteColor" data-size="2.13_104_212">2.13寸低分(黑白, SSD1619)</option>
-                    <option value="19" data-color="threeColor" data-size="2.13_104_212">2.13寸低分(三色, SSD1619)</option>
+                    <option value="19" data-color="blackWhiteColor" data-size="2.13_104_212">2.13寸低分(黑白, SSD1619)</option>
                     <option value="0e" data-color="blackWhiteColor" data-size="2.13_128_250">2.13寸 (黑白, SSD1619)</option>
                     <option value="0f" data-color="threeColor" data-size="2.13_128_250">2.13寸 (三色, SSD1619)</option>
                     <option value="13" data-color="fourColor" data-size="2.8_152_296">2.8寸 (四色, JD79668)</option>
@@ -2077,7 +2019,7 @@ const DRIVER_PRESETS = [
                     <option value="12" data-color="threeColor" data-size="2.9_128_296">2.9寸 (三色, SSD1619)</option>
                     <option value="1b" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1680)</option>
                     <option value="10" data-color="fourColor" data-size="3.1_300_300">3.1寸 (四色, JD79665)</option>
-                    <option value="18" data-color="threeColor" data-size="3.7_240_416">3.7寸 (三色, AI智屏壳)</option>
+                    <option value="18" data-color="threeColor" data-size="3.7_416_240">3.7寸 (三色, AI智屏壳)</option>
                     <option value="1c" data-color="fourColor" data-size="3.97_800_480">3.97寸 (四色, 方角四色屏)</option>
                     <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A0)</option>
                     <option value="15" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A1)</option>
