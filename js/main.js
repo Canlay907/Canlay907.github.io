@@ -145,10 +145,25 @@ async function write(cmd, data, withResponse = true) {
             payload.push(...data);
         }
         addLog(bytes2hex(payload), '⇑');
+        const dataBuffer = Uint8Array.from(payload);
+        
+        // ==============================================
+        // 🔥 核心兼容写法：自动适配所有浏览器/设备
+        // ==============================================
         if (withResponse) {
-            await epdCharacteristic.writeValueWithResponse(Uint8Array.from(payload));
+            // 带响应写入（兼容新老API）
+            if (epdCharacteristic.writeValueWithResponse) {
+                await epdCharacteristic.writeValueWithResponse(dataBuffer);
+            } else {
+                await epdCharacteristic.writeValue(dataBuffer);
+            }
         } else {
-            await epdCharacteristic.writeValueWithoutResponse(Uint8Array.from(payload));
+            // 不带响应写入（兼容新老API）
+            if (epdCharacteristic.writeValueWithoutResponse) {
+                await epdCharacteristic.writeValueWithoutResponse(dataBuffer);
+            } else {
+                await epdCharacteristic.writeValue(dataBuffer);
+            }
         }
         await sleep(WRITE_DELAY_MS);
         return true;
@@ -608,7 +623,38 @@ async function sendimg() {
     const transferFn = useCRC ? writeImageCRC : writeImage;
     if (useCRC) addLog("使用CRC校验传输模式");
 
-    if (ditherMode === 'fourColor') {
+    if (ditherMode === 'sixColor') {
+        // 获取当前画布的图像数据（已经过抖动预处理）
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        // 提取六色索引（0-5）
+        const sixColorPalette = epdRealColors.sixColor; // 从 dithering.js 中获取
+        const indexArray = extractSixColorIndex(imageData, sixColorPalette);
+        // 生成两次波形数据
+        const wave1 = mapSixColorToWaveform(indexArray, canvas.width, canvas.height, true);
+        const wave2 = mapSixColorToWaveform(indexArray, canvas.width, canvas.height, false);
+        
+        startTime = Date.now();
+        const statusEl = document.getElementById("status");
+        statusEl.parentElement.style.display = "block";
+        updateButtonStatus(true);
+        
+        await write(EpdCmd.INIT);
+        
+        // 第一次传输 + 刷新
+        await writeImageCRC(wave1, 'bw');   // 或 writeImage，取决于是否支持 CRC
+        await write(EpdCmd.REFRESH);
+        
+        // 第二次传输 + 刷新
+        await writeImageCRC(wave2, 'bw');
+        await write(EpdCmd.REFRESH);
+        
+        updateButtonStatus();
+        const elapsed = (Date.now() - startTime) / 1000;
+        addLog(`E6 发送完成！耗时: ${elapsed}s`);
+        setStatus(`E6 发送完成！耗时: ${elapsed}s`);
+        setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
+        return;
+    } else if (ditherMode === 'fourColor') {
         await transferFn(processedData, 'color');
     } else if (ditherMode === 'threeColor') {
         const half = Math.floor(processedData.length / 2);

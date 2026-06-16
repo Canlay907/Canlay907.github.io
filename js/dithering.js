@@ -1996,6 +1996,90 @@ function ditherImage(imageData, alg, strength, colorMode) {
 }
 
 
+/**
+ * 从经过抖动处理后的 ImageData 中提取每个像素的六色索引
+ * @param {ImageData} imageData 抖动后的图像数据（每个像素 RGB 已量化到六色）
+ * @param {Array} palette 六色调色板对象数组（带 value 字段）
+ * @returns {Uint8Array} 每个像素一个字节的索引数组（0-5）
+ */
+function extractSixColorIndex(imageData, palette) {
+    const data = imageData.data;
+    const total = imageData.width * imageData.height;
+    const indexArray = new Uint8Array(total);
+    // 构建快速查找表：RGB -> 索引
+    const lookup = new Map();
+    for (let i = 0; i < palette.length; i++) {
+        const c = palette[i];
+        const key = `${c.r},${c.g},${c.b}`;
+        lookup.set(key, i);
+    }
+    for (let i = 0; i < total; i++) {
+        const r = data[i*4];
+        const g = data[i*4+1];
+        const b = data[i*4+2];
+        const key = `${r},${g},${b}`;
+        let idx = lookup.get(key);
+        if (idx === undefined) {
+            // 回退：查找最接近的颜色（理论上抖动后应该精确匹配）
+            let best = 0, bestDist = Infinity;
+            for (let j = 0; j < palette.length; j++) {
+                const c = palette[j];
+                const dr = r - c.r, dg = g - c.g, db = b - c.b;
+                const dist = dr*dr + dg*dg + db*db;
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    best = j;
+                }
+            }
+            idx = best;
+        }
+        indexArray[i] = idx;
+    }
+    return indexArray;
+}
+/**
+ * 将六色索引数组打包为 E6 所需的 4bit 格式（每字节两个像素）
+ * @param {Uint8Array} indexArray 每个像素一个字节，值 0-5
+ * @param {number} width
+ * @param {number} height
+ * @returns {Uint8Array} 打包后的数据，长度为 ceil(width*height/2)
+ */
+function packSixColorTo4bit(indexArray, width, height) {
+    const total = width * height;
+    const packed = new Uint8Array(Math.ceil(total / 2));
+    for (let i = 0; i < total; i += 2) {
+        const high = indexArray[i] & 0x0F;
+        const low = (i+1 < total) ? (indexArray[i+1] & 0x0F) : 0;
+        packed[i >> 1] = (high << 4) | low;
+    }
+    return packed;
+}
+/**
+ * 将六色索引数组映射为波形码（2bpp），每两个像素合并为一个字节
+ * @param {Uint8Array} indexArray 原始索引 0-5
+ * @param {number} width
+ * @param {number} height
+ * @param {boolean} firstStage true 使用 color_map，false 使用 color_map1
+ * @returns {Uint8Array} 波形数据，每字节包含4个像素（每个像素2位）
+ */
+function mapSixColorToWaveform(indexArray, width, height, firstStage) {
+    const map = firstStage ? [1,1,2,3,0,1] : [0,1,1,3,1,2];
+    const total = width * height;
+    const out = new Uint8Array(Math.ceil(total / 4)); // 每4个像素输出1字节
+    for (let i = 0; i < total; i += 4) {
+        let byte = 0;
+        for (let j = 0; j < 4; j++) {
+            if (i + j < total) {
+                const idx = indexArray[i + j];
+                const val = map[idx];
+                byte |= (val << (6 - j*2));
+            }
+        }
+        out[i >> 2] = byte;
+    }
+    return out;
+}
+
 function decodeProcessedData(processedData, width, height, mode) {
   const imageData = new ImageData(width, height);
   const data = imageData.data;
