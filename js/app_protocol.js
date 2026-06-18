@@ -64,7 +64,12 @@ const AppProtocol = (function() {
     async function sendInit() {
         if (!cmdCharacteristic) throw new Error('Command characteristic not set');
         const cmd = new Uint8Array([CMD.INIT, epdType, epdIndex]);
-        await cmdCharacteristic.writeValueWithResponse(cmd);
+        // 带响应写入（兼容新老API）
+        if (cmdCharacteristic.writeValueWithResponse) {
+            await cmdCharacteristic.writeValueWithResponse(cmd);
+        } else {
+            await cmdCharacteristic.writeValue(cmd);
+        }
         log(`[APP] >>> INIT (cmd): ${Array.from(cmd).map(b => b.toString(16).padStart(2,'0')).join(' ')}`);
     }
 
@@ -77,7 +82,12 @@ const AppProtocol = (function() {
         cmd[3] = (totalBytes >> 8) & 0xFF;
         cmd[4] = (totalBytes >> 16) & 0xFF;
         cmd[5] = (totalBytes >> 24) & 0xFF;
-        await cmdCharacteristic.writeValueWithResponse(cmd);
+        // 带响应写入（兼容新老API）
+        if (cmdCharacteristic.writeValueWithResponse) {
+            await cmdCharacteristic.writeValueWithResponse(cmd);
+        } else {
+            await cmdCharacteristic.writeValue(cmd);
+        }
         log(`[APP] >>> PIC_INFO (cmd): ${Array.from(cmd).map(b => b.toString(16).padStart(2,'0')).join(' ')} (size=${totalBytes})`);
     }
     
@@ -96,7 +106,12 @@ const AppProtocol = (function() {
             const payloadSize = Math.min(PAYLOAD_SIZE, remaining);
             // 直接取原始数据切片，不加任何头尾
             const chunk = picData.subarray(pos, pos + payloadSize);
-            await dataCharacteristic.writeValueWithoutResponse(chunk);
+            // 不带响应写入（兼容新老API）
+            if (dataCharacteristic.writeValueWithoutResponse) {
+                await dataCharacteristic.writeValueWithoutResponse(chunk);
+            } else {
+                await dataCharacteristic.writeValue(chunk);
+            }
             packetCount++;
             pos += payloadSize;
 

@@ -520,6 +520,48 @@ async function sendimgAppMode() {
         setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
     }
 }
+//交错处理抖动好的数据
+/**
+ * JD79660 屏幕数据交错重排函数
+ * 适配tsl0922驱动 3.98寸 768x552屏幕
+ * 逻辑行552行(0~551)，上下各276行交错映射物理行
+ * @param {Uint8Array} rawData 原始未重排四色图像数据，每字节4像素
+ * @returns {Uint8Array} 交错重排完成后的图像数据
+ */
+function JD79660JiaoCuoYuChuLi(rawData) {
+    // 1. 获取当前画布尺寸 匹配 canvasSizes 中 3.98_768_552
+    const sizeItem = canvasSizes.find(item => item.name === "3.98_768_552");
+    const W = sizeItem.width;  // 768
+    const H = sizeItem.height; // 552
+    const lineByteCount = W / 4; // 单行字节数 768/4=192
+    const halfLineCount = H / 2;   // 上下两半各276行
+
+    // 分配输出缓冲区，总长度和原始数据一致 W*H/4
+    const interleaveBuf = new Uint8Array(rawData.length);
+
+    // 遍历每一行逻辑行 (0 ~ 551)
+    for (let logicRow = 0; logicRow < H; logicRow++) {
+        // 计算当前逻辑行在原始数组的起始偏移
+        const rawLineOffset = logicRow * lineByteCount;
+        // 计算映射后的物理行
+        let physicalRow;
+        if (logicRow < halfLineCount) {
+            // 上半部分0~275 → 偶数物理行 0,2,4...550
+            physicalRow = logicRow * 2;
+        } else {
+            // 下半部分276~551 → 反向奇数行 551,549...1
+            const offset = logicRow - halfLineCount;
+            physicalRow = (H - 1) - 2 * offset;
+        }
+        // 物理行对应输出缓冲区偏移
+        const targetOffset = physicalRow * lineByteCount;
+        // 复制单行全部字节到交错缓冲区对应位置
+        for (let b = 0; b < lineByteCount; b++) {
+            interleaveBuf[targetOffset + b] = rawLineOffset + b < rawData.length ? rawData[rawLineOffset + b] : 0;
+        }
+    }
+    return interleaveBuf;
+}
 
 // ==================== 发送图片（支持双协议）====================
 async function sendimg() {
@@ -551,6 +593,7 @@ async function sendimg() {
     const canvasSizeVal = document.getElementById('canvasSize').value;
     const ditherMode = document.getElementById('ditherMode').value;
     const epdDriverSelect = document.getElementById('epddriver');
+    const epdDriverPreset = document.getElementById('driverPreset');
     const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
 
     if (selectedOption.getAttribute('data-size') !== canvasSizeVal && !confirm("警告：画布尺寸和驱动不匹配，是否继续？")) return;
@@ -602,7 +645,13 @@ async function sendimg() {
         setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
         return;
     } else if (ditherMode === 'fourColor') {
-        await transferFn(processedData, 'color');
+        if(epdDriverPreset.value == "tsl0922" && epdDriverSelect.value == "13"){
+            // JD79660 屏幕执行行交错重排
+            const interleaveData = JD79660JiaoCuoYuChuLi(processedData);
+            await transferFn(interleaveData, 'color');
+        }else{
+            await transferFn(processedData, 'color');
+        }
     } else if (ditherMode === 'threeColor') {
         const half = Math.floor(processedData.length / 2);
         const bwData = processedData.slice(0, half);
@@ -668,6 +717,9 @@ function downloadDataArray() {
     for (let i = 0; i < hexLines.length; i += 16) {
         chunks.push(hexLines.slice(i, i + 16).join(', '));
     }
+    const epdDriverSelect = document.getElementById('epddriver');
+    const epdDriverPreset = document.getElementById('driverPreset');
+    if(epdDriverPreset.value == "tsl0922" && epdDriverSelect.value == "13") chunks = JD79660JiaoCuoYuChuLi(chunks);
 
     const colorModeCode = mode === 'sixColor' ? 0 : mode === 'fourColor' ? 1 : mode === 'blackWhiteColor' ? 2 : 3;
     const content = [

@@ -45,7 +45,7 @@ const threeColorPalette = [
 
 // 墨水屏实际显示颜色（用于更精确的颜色匹配，解决偏红问题）
 const epdRealColors = {
-    
+    /*
     sevenColor: [//按国外资源做纠正的
         { name: "黑色", realR: 25, realG: 30, realB: 33, r: 0, g: 0, b: 0, value: 0x00 },
         { name: "白色", realR: 241, realG: 241, realB: 241, r: 255, g: 255, b: 255, value: 0x01 },
@@ -54,7 +54,7 @@ const epdRealColors = {
         { name: "红色", realR: 210, realG: 14, realB: 19, r: 255, g: 0, b: 0, value: 0x04 },
         { name: "黄色", realR: 243, realG: 207, realB: 17, r: 255, g: 255, b: 0, value: 0x05 },
         { name: "橙色", realR: 184, realG: 94, realB: 28, r: 255, g: 128, b: 0, value: 0x06 }
-    ], /*
+    ], 
     sevenColor: [//纯原始RGB色彩
         { name: "黑色", realR: 0, realG: 0, realB: 0, r: 0, g: 0, b: 0, value: 0x00 },
         { name: "白色", realR: 255, realG: 255, realB: 255, r: 255, g: 255, b: 255, value: 0x01 },
@@ -64,6 +64,15 @@ const epdRealColors = {
         { name: "黄色", realR: 255, realG: 255, realB: 0, r: 255, g: 255, b: 0, value: 0x05 },
         { name: "橙色", realR: 255, realG: 128, realB: 0, r: 255, g: 128, b: 0, value: 0x06 }
     ], */
+    sevenColor: [//按群内大佬调色做纠正的
+        { name: "黑色", realR: 0, realG: 0, realB: 0, r: 0, g: 0, b: 0, value: 0x00 },
+        { name: "白色", realR: 255, realG: 255, realB: 255, r: 255, g: 255, b: 255, value: 0x01 },
+        { name: "绿色", realR: 0, realG: 155, realB: 70, r: 0, g: 255, b: 0, value: 0x02 },
+        { name: "蓝色", realR: 0, realG: 65, realB: 175, r: 0, g: 0, b: 255, value: 0x03 },
+        { name: "红色", realR: 220, realG: 20, realB: 60, r: 255, g: 0, b: 0, value: 0x04 },
+        { name: "黄色", realR: 255, realG: 210, realB: 0, r: 255, g: 255, b: 0, value: 0x05 },
+        { name: "橙色", realR: 255, realG: 110, realB: 0, r: 255, g: 128, b: 0, value: 0x06 }
+    ],
     sixColor: [
         { name: "黄色", realR: 200, realG: 195, realB: 60, r: 255, g: 255, b: 0, value: 0xE2 },
         { name: "绿色", realR: 35, realG: 140, realB: 35, r: 41, g: 204, b: 20, value: 0x96 },
