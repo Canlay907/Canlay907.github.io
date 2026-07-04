@@ -11,12 +11,13 @@
 const sevenColorPalette = [
   { name: "黑色", r: 0, g: 0, b: 0, value: 0x00 },
   { name: "白色", r: 255, g: 255, b: 255, value: 0x01 },
-  { name: "绿色", r: 41, g: 204, b: 20, value: 0x02 },
+  { name: "绿色", r: 0, g: 255, b: 0, value: 0x02 },
   { name: "蓝色", r: 0, g: 0, b: 255, value: 0x03 },
   { name: "红色", r: 255, g: 0, b: 0, value: 0x04 },
   { name: "黄色", r: 255, g: 255, b: 0, value: 0x05 },
   { name: "橙色", r: 255, g: 128, b: 0, value: 0x06 }
 ];
+/*
 // 标准六色调色板（用于算法内部颜色匹配）
 // 固定的六色调色板
 const rgbPalette = [
@@ -26,6 +27,14 @@ const rgbPalette = [
   { name: "红色", r: 255, g: 0, b: 0, value: 0x4c },
   { name: "黑色", r: 0, g: 0, b: 0, value: 0x00 },
   { name: "白色", r: 255, g: 255, b: 255, value: 0xff }
+];*/
+const rgbPalette = [
+  { name: "黄色", r: 255, g: 255, b: 0, value: 0x02 },
+  { name: "绿色", r: 0, g: 255, b: 0, value: 0x06 },
+  { name: "蓝色", r: 0, g: 0, b: 255, value: 0x05 },
+  { name: "红色", r: 255, g: 0, b: 0, value: 0x03 },
+  { name: "黑色", r: 0, g: 0, b: 0, value: 0x00 },
+  { name: "白色", r: 255, g: 255, b: 255, value: 0x01 }
 ];
 
 // 四色调色板
@@ -45,7 +54,7 @@ const threeColorPalette = [
 
 // 墨水屏实际显示颜色（用于更精确的颜色匹配，解决偏红问题）
 const epdRealColors = {
-    /*
+    
     sevenColor: [//按国外资源做纠正的
         { name: "黑色", realR: 25, realG: 30, realB: 33, r: 0, g: 0, b: 0, value: 0x00 },
         { name: "白色", realR: 241, realG: 241, realB: 241, r: 255, g: 255, b: 255, value: 0x01 },
@@ -54,7 +63,7 @@ const epdRealColors = {
         { name: "红色", realR: 210, realG: 14, realB: 19, r: 255, g: 0, b: 0, value: 0x04 },
         { name: "黄色", realR: 243, realG: 207, realB: 17, r: 255, g: 255, b: 0, value: 0x05 },
         { name: "橙色", realR: 184, realG: 94, realB: 28, r: 255, g: 128, b: 0, value: 0x06 }
-    ], 
+    ], /*
     sevenColor: [//纯原始RGB色彩
         { name: "黑色", realR: 0, realG: 0, realB: 0, r: 0, g: 0, b: 0, value: 0x00 },
         { name: "白色", realR: 255, realG: 255, realB: 255, r: 255, g: 255, b: 255, value: 0x01 },
@@ -63,23 +72,34 @@ const epdRealColors = {
         { name: "红色", realR: 255, realG: 0, realB: 0, r: 255, g: 0, b: 0, value: 0x04 },
         { name: "黄色", realR: 255, realG: 255, realB: 0, r: 255, g: 255, b: 0, value: 0x05 },
         { name: "橙色", realR: 255, realG: 128, realB: 0, r: 255, g: 128, b: 0, value: 0x06 }
-    ], */
-    sevenColor: [//按群内大佬调色做纠正的
-        { name: "黑色", realR: 0, realG: 0, realB: 0, r: 0, g: 0, b: 0, value: 0x00 },
-        { name: "白色", realR: 255, realG: 255, realB: 255, r: 255, g: 255, b: 255, value: 0x01 },
-        { name: "绿色", realR: 0, realG: 155, realB: 70, r: 0, g: 255, b: 0, value: 0x02 },
-        { name: "蓝色", realR: 0, realG: 65, realB: 175, r: 0, g: 0, b: 255, value: 0x03 },
-        { name: "红色", realR: 220, realG: 20, realB: 60, r: 255, g: 0, b: 0, value: 0x04 },
-        { name: "黄色", realR: 255, realG: 210, realB: 0, r: 255, g: 255, b: 0, value: 0x05 },
-        { name: "橙色", realR: 255, realG: 110, realB: 0, r: 255, g: 128, b: 0, value: 0x06 }
-    ],
-    sixColor: [
+    ], 
+    sixColor: [//其他人的数据
         { name: "黄色", realR: 200, realG: 195, realB: 60, r: 255, g: 255, b: 0, value: 0xE2 },
         { name: "绿色", realR: 35, realG: 140, realB: 35, r: 41, g: 204, b: 20, value: 0x96 },
         { name: "蓝色", realR: 30, realG: 40, realB: 140, r: 0, g: 0, b: 255, value: 0x1D },
         { name: "红色", realR: 180, realG: 50, realB: 50, r: 255, g: 0, b: 0, value: 0x4C },
         { name: "黑色", realR: 30, realG: 30, realB: 30, r: 0, g: 0, b: 0, value: 0x00 },
         { name: "白色", realR: 220, realG: 215, realB: 205, r: 255, g: 255, b: 255, value: 0xFF }
+    ],
+    sixColor: [//国外的数据
+        { name: "黄色", realR: 193, realG: 187, realB: 30, r: 255, g: 255, b: 0, value: 0x02 },
+        { name: "绿色", realR: 53, realG: 86, realB: 58, r: 0, g: 255, b: 0, value: 0x06 },
+        { name: "蓝色", realR: 35, realG: 63, realB: 142, r: 0, g: 0, b: 255, value: 0x05 },
+        { name: "红色", realR: 98, realG: 32, realB: 30, r: 255, g: 0, b: 0, value: 0x03 },
+        { name: "黑色", realR: 31, realG: 34, realB: 38, r: 0, g: 0, b: 0, value: 0x00 },
+        { name: "白色", realR: 185, realG: 199, realB: 201, r: 255, g: 255, b: 255, value: 0x01 }
+    ],*/
+    sixColor: [//豆包修改的，还行
+        // 黄色：轻微压黄相，减少抢绿色区间
+        { name: "黄色", realR: 195, realG: 188, realB: 25, r: 255, g: 255, b: 0, value: 0x02 },
+        // 绿色：增加蓝通道分量，修正偏黄，提升饱和度，贴近标准翠绿
+        { name: "绿色", realR: 55, realG: 205, realB: 85, r: 0, g: 255, b: 0, value: 0x06 },
+        // 蓝色：降低纯蓝明度、加少量绿，还原青色过渡区间
+        { name: "蓝色", realR: 42, realG: 105, realB: 208, r: 0, g: 0, b: 255, value: 0x05 },
+        // 红色：小幅压暗，避免橙黄区间溢出
+        { name: "红色", realR: 170, realG: 20, realB: 18, r: 255, g: 0, b: 0, value: 0x03 },
+        { name: "黑色", realR: 20, realG: 24, realB: 28, r: 0, g: 0, b: 0, value: 0x00 },
+        { name: "白色", realR: 238, realG: 238, realB: 238, r: 255, g: 255, b: 255, value: 0x01 }
     ],
     fourColor: [
         { name: "黑色", realR: 30, realG: 30, realB: 30, r: 0, g: 0, b: 0, value: 0x00 },
@@ -2064,24 +2084,31 @@ function packSixColorTo4bit(indexArray, width, height) {
     return packed;
 }
 /**
- * 将六色索引数组映射为波形码（2bpp），每两个像素合并为一个字节
- * @param {Uint8Array} indexArray 原始索引 0-5
- * @param {number} width
- * @param {number} height
- * @param {boolean} firstStage true 使用 color_map，false 使用 color_map1
- * @returns {Uint8Array} 波形数据，每字节包含4个像素（每个像素2位）
+ * 六色索引转驱动波形2bit码，匹配固件color_map / color_map1
+ * @param indexArray 上位0黄1绿2蓝3红4黑5白索引数组
+ * @param width
+ * @param height
+ * @param firstStage true=第一阶段color_map, false=第二阶段color_map1
+ * @returns Uint8Array 每字节4像素(2bit/像素)
  */
 function mapSixColorToWaveform(indexArray, width, height, firstStage) {
-    const map = firstStage ? [1,1,2,3,0,1] : [0,1,1,3,1,2];
+    // 上位下标 → 硬件4bit色号
+    const hwCode = [2,6,5,3,0,1];
+    // 固件两段映射表，严格复制驱动C代码
+    const color_map  = [1, 1, 2, 3, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+    const color_map1 = [0, 1, 1, 3, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+    const table = firstStage ? color_map : color_map1;
+
     const total = width * height;
-    const out = new Uint8Array(Math.ceil(total / 4)); // 每4个像素输出1字节
+    const out = new Uint8Array(Math.ceil(total / 4));
     for (let i = 0; i < total; i += 4) {
         let byte = 0;
         for (let j = 0; j < 4; j++) {
             if (i + j < total) {
-                const idx = indexArray[i + j];
-                const val = map[idx];
-                byte |= (val << (6 - j*2));
+                const upIdx = indexArray[i + j];
+                const fourBit = hwCode[upIdx]; // 转硬件4bit值(0/1/2/3/5/6)
+                const twoBit = table[fourBit]; // 查表得到波形2bit码
+                byte |= (twoBit << (6 - j * 2));
             }
         }
         out[i >> 2] = byte;

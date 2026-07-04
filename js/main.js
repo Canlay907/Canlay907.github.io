@@ -55,6 +55,7 @@ const canvasSizes = [
     { name: '2.13_128_250', width: 128, height: 250 },
     { name: '2.66_152_296', width: 152, height: 296 },//52810单独的
     { name: '2.66_296_152', width: 296, height: 152 },
+    { name: '2.7_176_264', width: 176, height: 264 },//LG2.7寸黑白
     { name: '2.8_152_296', width: 152, height: 296 },//四色2.8寸
     { name: '2.9_296_128', width: 296, height: 128 },
     { name: '2.9_128_296', width: 128, height: 296 },//盒马2.9寸
@@ -204,6 +205,10 @@ async function writeImage(data, step = 'bw') {
 async function writeImageCRC(data, step = 'bw') {
     const stepName = step === 'bw' ? '黑白' : '颜色';
     try {
+        const epdDriverSelect = document.getElementById('epddriver');
+        const epdDriverPreset = document.getElementById('driverPreset');
+        addLog(`驱动预设: ${epdDriverPreset.value}  驱动ID:${epdDriverSelect.value}`);
+        if(epdDriverPreset.value == "tsl0922" && epdDriverSelect.value == "13") data = JD79660JiaoCuoYuChuLi(data);
         await BleTransfer.sendImageWithResume(data, step, (sent, total, speedInfo) => {
             if (speedInfo) {
                 setStatus(`${stepName}块(CRC): ${sent}/${total}, ${BleTransfer.getSpeedString()}, ${speedInfo.elapsed}s`);
@@ -520,6 +525,7 @@ async function sendimgAppMode() {
         setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
     }
 }
+
 //交错处理抖动好的数据
 /**
  * JD79660 屏幕数据交错重排函数
@@ -538,6 +544,7 @@ function JD79660JiaoCuoYuChuLi(rawData) {
 
     // 分配输出缓冲区，总长度和原始数据一致 W*H/4
     const interleaveBuf = new Uint8Array(rawData.length);
+    addLog("TSL0922大佬的A0交错预处理!接收端不处理.");
 
     // 遍历每一行逻辑行 (0 ~ 551)
     for (let logicRow = 0; logicRow < H; logicRow++) {
@@ -593,7 +600,6 @@ async function sendimg() {
     const canvasSizeVal = document.getElementById('canvasSize').value;
     const ditherMode = document.getElementById('ditherMode').value;
     const epdDriverSelect = document.getElementById('epddriver');
-    const epdDriverPreset = document.getElementById('driverPreset');
     const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
 
     if (selectedOption.getAttribute('data-size') !== canvasSizeVal && !confirm("警告：画布尺寸和驱动不匹配，是否继续？")) return;
@@ -614,44 +620,44 @@ async function sendimg() {
     if (useCRC) addLog("使用CRC校验传输模式");
 
     if (ditherMode === 'sixColor') {
-        // 获取当前画布的图像数据（已经过抖动预处理）
+        // 1. 获取画布原始六色索引 0黄,1绿,2蓝,3红,4黑,5白
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        // 提取六色索引（0-5）
-        const sixColorPalette = epdRealColors.sixColor; // 从 dithering.js 中获取
-        const indexArray = extractSixColorIndex(imageData, sixColorPalette);
-        // 生成两次波形数据
-        const wave1 = mapSixColorToWaveform(indexArray, canvas.width, canvas.height, true);
-        const wave2 = mapSixColorToWaveform(indexArray, canvas.width, canvas.height, false);
+        const sixColorPalette = epdRealColors.sixColor;
+        const indexArray = extractSixColorIndex(imageData);
+        
+        // 上位下标转硬件4bit码：0→2,1→6,2→5,3→3,4→0,5→1
+        const hwMap = [2, 6, 5, 3, 0, 1];
+        const mappedArray = new Uint8Array(indexArray.length);
+        for (let i = 0; i < indexArray.length; i++) {
+            mappedArray[i] = hwMap[indexArray[i]];
+        }
+        // 打包4bit原始数据（传给固件第一层输入）
+        const rawData = packSixColorTo4bit(mappedArray, canvas.width, canvas.height);
         
         startTime = Date.now();
         const statusEl = document.getElementById("status");
         statusEl.parentElement.style.display = "block";
         updateButtonStatus(true);
-        
         await write(EpdCmd.INIT);
-        
-        // 第一次传输 + 刷新
-        await writeImageCRC(wave1, 'bw');   // 或 writeImage，取决于是否支持 CRC
+    
+        // ========== 第一阶段刷新 color_map ==========
+        await transferFn(rawData, 'color');
         await write(EpdCmd.REFRESH);
-        
-        // 第二次传输 + 刷新
-        await writeImageCRC(wave2, 'bw');
+        addLog("⏳ E6 第一阶段刷新( color_map )等待10秒...");
+        await sleep(10000);
+    
+        // ========== 第二阶段刷新 color_map1 ==========
+        await transferFn(rawData, 'color');
         await write(EpdCmd.REFRESH);
-        
+    
         updateButtonStatus();
         const elapsed = (Date.now() - startTime) / 1000;
-        addLog(`E6 发送完成！耗时: ${elapsed}s`);
-        setStatus(`E6 发送完成！耗时: ${elapsed}s`);
+        addLog(`✅ E6 双阶段传输完成！耗时: ${elapsed}s`);
+        setStatus(`✅ E6 传输完成！耗时: ${elapsed}s`);
         setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
         return;
     } else if (ditherMode === 'fourColor') {
-        if(epdDriverPreset.value == "tsl0922" && epdDriverSelect.value == "13"){
-            // JD79660 屏幕执行行交错重排
-            const interleaveData = JD79660JiaoCuoYuChuLi(processedData);
-            await transferFn(interleaveData, 'color');
-        }else{
-            await transferFn(processedData, 'color');
-        }
+        await transferFn(processedData, 'color');
     } else if (ditherMode === 'threeColor') {
         const half = Math.floor(processedData.length / 2);
         const bwData = processedData.slice(0, half);
@@ -717,11 +723,8 @@ function downloadDataArray() {
     for (let i = 0; i < hexLines.length; i += 16) {
         chunks.push(hexLines.slice(i, i + 16).join(', '));
     }
-    const epdDriverSelect = document.getElementById('epddriver');
-    const epdDriverPreset = document.getElementById('driverPreset');
-    if(epdDriverPreset.value == "tsl0922" && epdDriverSelect.value == "13") chunks = JD79660JiaoCuoYuChuLi(chunks);
 
-    const colorModeCode = mode === 'sixColor' ? 0 : mode === 'fourColor' ? 1 : mode === 'blackWhiteColor' ? 2 : 3;
+    const colorModeCode = mode === 'sevenColor' ? 7 : mode === 'sixColor' ? 6 : mode === 'fourColor' ? 4 : mode === 'threeColor' ? 3 : mode === 'blackWhiteColor' ? 2 : 3;
     const content = [
         'const uint8_t imageData[] PROGMEM = {',
         chunks.join(',\n'),
@@ -784,8 +787,9 @@ function uploadDataArray() {
                 const height = parseInt(heightMatch[1], 10);
                 const code = parseInt(colorModeMatch[1], 10);
                 let modeStr;
-                if (code === 0) modeStr = "sixColor";
-                else if (code === 1) modeStr = "fourColor";
+                if (code === 7) modeStr = "sevenColor";
+                else if (code === 6) modeStr = "sixColor";
+                else if (code === 4) modeStr = "fourColor";
                 else if (code === 2) modeStr = "blackWhiteColor";
                 else if (code === 3) modeStr = "threeColor";
                 else throw new Error("未知颜色模式码");
@@ -2062,26 +2066,30 @@ const DRIVER_PRESETS = [
         // 选项HTML（与原 QuDong_DongShan 完全一致）
         optionsHtml: `
                     <option value="1d" data-color="blackWhiteColor" data-size="1.54_152_152">1.54寸 (黑白低分, UC8176)</option>
+                    <option value="22" data-color="blackWhiteColor" data-size="1.54_152_152">1.54寸OPM(黑白低分, SSD1675B)</option>
                     <option value="17" data-color="threeColor" data-size="1.54_200_200">1.54寸 (三色, UC8176)</option>
                     <option value="19" data-color="blackWhiteColor" data-size="2.13_104_212">2.13寸低分(黑白, SSD1619)</option>
                     <option value="0e" data-color="blackWhiteColor" data-size="2.13_128_250">2.13寸 (黑白, SSD1619)</option>
                     <option value="0f" data-color="threeColor" data-size="2.13_128_250">2.13寸 (三色, SSD1619)</option>
+                    <option value="21" data-color="blackWhiteColor" data-size="2.7_176_264">2.7寸LG(黑白, IL91874)</option>
                     <option value="13" data-color="fourColor" data-size="2.8_152_296">2.8寸 (四色, JD79668)</option>
                     <option value="11" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1619)</option>
                     <option value="12" data-color="threeColor" data-size="2.9_128_296">2.9寸 (三色, SSD1619)</option>
                     <option value="1b" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1680)</option>
+                    <option value="20" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, UC8151D)</option>
                     <option value="10" data-color="fourColor" data-size="3.1_300_300">3.1寸 (四色, JD79665)</option>
                     <option value="18" data-color="threeColor" data-size="3.7_416_240">3.7寸 (三色, AI智屏壳)</option>
                     <option value="1c" data-color="fourColor" data-size="3.97_800_480">3.97寸 (四色, 方角四色屏)</option>
                     <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A0)</option>
                     <option value="15" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A1)</option>
+                    <option value="1f" data-color="sixColor" data-size="3.98_768_552">3.98寸 (六色, 高分E6)</option>
                     <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
                     <option value="02" data-color="threeColor" data-size="4.2_400_300" selected>4.2寸 (三色, UC8176)</option>
                     <option value="16" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SES_4.2BWR_GL340)</option>
                     <option value="03" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
                     <option value="04" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
                     <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
-                    <option value="1e" data-color="blackWhiteColor" data-size="5.83_648_480">5.83寸 (黑白, JD79583)</option>
+                    <option value="1e" data-color="blackWhiteColor" data-size="5.83_600_448">5.83寸 (黑白, JD79583)</option>
                     <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
                     <option value="FF" data-color="sevenColor" data-size="7.3E6_800_480">7.3寸 (七色, Spectra 6)</option>
                     <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, SES7.4_GU140)</option>
