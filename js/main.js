@@ -2082,6 +2082,7 @@ const DRIVER_PRESETS = [
                     <option value="1c" data-color="fourColor" data-size="3.97_800_480">3.97寸 (四色, 方角四色屏)</option>
                     <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A0)</option>
                     <option value="15" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A1)</option>
+                    <option value="23" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, A1-202511)</option>
                     <option value="1f" data-color="sixColor" data-size="3.98_768_552">3.98寸 (六色, 高分E6)</option>
                     <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
                     <option value="02" data-color="threeColor" data-size="4.2_400_300" selected>4.2寸 (三色, UC8176)</option>
