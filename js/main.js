@@ -284,11 +284,18 @@ async function syncTime(mode) {
         -(new Date().getTimezoneOffset() / 60),
         mode
     ]);
+
+    // 发送星期第一天设置
+    const weekStart = getWeekStart();
+    const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    await write(EpdCmd.SET_WEEK_START, new Uint8Array([weekStart]));
+
+    // 发送时间（仅一次）
     if (await write(EpdCmd.SET_TIME, data)) {
-        addLog("时间已同步！");
+        addLog(`时间已同步！模式：${mode === 1 ? '日历' : '时钟'}`);
+        addLog(`星期第一天已设置为：${weekDays[weekStart]}`);
         addLog("屏幕刷新完成前请不要操作。");
     }
-    await sendTimeCommand(mode, mode === 1 ? '日历模式' : '时钟模式');
 }
 
 // ==================== 新增：无弹窗同步时间 ====================
