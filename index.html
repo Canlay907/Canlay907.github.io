@@ -3,13 +3,13 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>墨水屏日历-更新华为新版FNG-A1屏幕</title>
+    <title>墨水屏日历</title>
     <link rel="shortcut icon" type="image/png" href="favicon.png">
     <link rel="stylesheet" href="css/main.css?v=20251109">
 </head>
 <body>
 <div class="main">
-    <h3>墨水屏日历-更新华为新版FNG-A1屏幕</h3>
+    <h3>墨水屏日历</h3>
     <fieldset>
         <legend>蓝牙连接</legend>
         <div class="flex-container">
@@ -150,6 +150,30 @@
             </div>
         </div>
     </fieldset>
+    
+    <fieldset id="slot-panel">
+			<legend>图片槽位</legend>
+			<div class="slot-toolbar">
+				<div>
+					<strong id="slotSummary">连接设备后读取槽位</strong>
+					<span id="slotHint" class="slot-hint">图片保存在设备外置 Flash 中</span>
+				</div>
+				<div class="slot-toolbar-actions">
+					<button id="refreshSlotsButton" type="button" class="secondary" onclick="refreshSlots()" disabled>刷新槽位</button>
+					<button id="eraseAllSlotsButton" type="button" class="secondary slot-delete" onclick="freeAllImageSlots()" disabled>擦除全部</button>
+				</div>
+			</div>
+			<div class="slot-slide-controls">
+				<label for="slotSlideMinutes">轮播间隔</label>
+				<input id="slotSlideMinutes" type="number" min="1" max="65535" value="5" inputmode="numeric">
+				<span>分钟</span>
+				<button id="startSlotSlideButton" type="button" class="primary" onclick="startSlotSlide()" disabled>启动轮播</button>
+				<button id="randomSlotSlideButton" type="button" class="secondary" onclick="startRandomSlotSlide()" disabled>随机轮播</button>
+				<button id="stopSlotSlideButton" type="button" class="secondary" onclick="stopSlotSlide()" disabled>停止</button>
+			</div>
+			<div id="slotGrid" class="slot-grid" aria-live="polite"></div>
+			<div id="slotReadStatus" class="slot-read-status" hidden></div>
+		</fieldset>
 
     <fieldset>
         <legend>蓝牙传图</legend>
@@ -177,6 +201,7 @@
                     <option value="3.97_800_480">3.97 (800x480)</option>
                     <option value="3.98_768_552">3.98 (768x552)</option>
                     <option value="4.2_400_300" selected>4.2 (400x300)</option>
+                    <option value="4.37_512_368">4.37 (512x368)</option>
                     <option value="5.79_792_272">5.79 (792x272)</option>
                     <option value="5.81_720_256">5.81 (720x256)</option>
                     <option value="5.83_600_448">5.83 (600x448)</option>
@@ -185,6 +210,7 @@
                     <option value="7.5_640_384">7.5 (640x384)</option>
                     <option value="7.5_800_480">7.5 (800x480)</option>
                     <option value="7.5_880_528">7.5 (880x528)</option>
+                    <option value="9.7_960_680">9.7 (960x680)</option>
                     <option value="10.2_960_640">10.2 (960x640)</option>
                     <option value="10.85_1360_480">10.85 (1360x480)</option>
                     <option value="11.6_960_640">11.6 (960x640)</option>

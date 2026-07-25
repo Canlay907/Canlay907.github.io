@@ -98,7 +98,7 @@ const AppProtocol = (function() {
         const totalPackets = Math.ceil(totalLen / packetSize);
         let pos = 0;
         let packetCount = 0;
-        const MAX_PACKET_CNT = 0x27;      // 39 包后延时 100ms
+        const MAX_PACKET_CNT = 480;      // 39 包后延时 100ms
         const PAYLOAD_SIZE = packetSize;  // 使用外部定义的 packetSize（如 MTU-3 等）
 
         while (pos < totalLen) {

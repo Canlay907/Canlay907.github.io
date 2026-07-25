@@ -36,6 +36,13 @@ const EpdCmd = {
     WRITE_BLOCK: 0x31,         // CRC传输块
     QUERY_STATUS: 0x32,        // 查询传输状态
     RESET_TRANSFER: 0x33,      // 重置传输状态
+    
+    SET_SLOT: 0x31,      // 设置/选择/显示槽位
+    FREE_SLOT: 0x32,     // 释放槽位
+    SET_SLIDE: 0x33,     // 轮播间隔
+    GET_IMAGE: 0x34,     // 读取槽位图片
+    GET_SLOTS: 0x35,     // 查询槽位信息
+    
     SET_CONFIG: 0x90,
     SYS_RESET: 0x91,
     SYS_SLEEP: 0x92,
@@ -67,6 +74,7 @@ const canvasSizes = [
     { name: '3.97_800_480', width: 800, height: 480 },
     { name: '3.98_768_552', width: 768, height: 552 },//3.98寸四色手机壳
     { name: '4.2_400_300', width: 400, height: 300 },
+    { name: '4.37_512_368', width: 512, height: 368 },//4.37四色
     { name: '5.79_792_272', width: 792, height: 272 },
     { name: '5.81_720_256', width: 720, height: 256 },//海带屏
     { name: '5.83_600_448', width: 600, height: 448 },
@@ -75,6 +83,7 @@ const canvasSizes = [
     { name: '7.5_640_384', width: 640, height: 384 },
     { name: '7.5_800_480', width: 800, height: 480 },
     { name: '7.5_880_528', width: 880, height: 528 },
+    { name: '9.7_960_680', width: 960, height: 680 },//9.7寸四色
     { name: '10.2_960_640', width: 960, height: 640 },
     { name: '10.85_1360_480', width: 1360, height: 480 },
     { name: '11.6_960_640', width: 960, height: 640 },
@@ -95,6 +104,31 @@ let imageDataA = null, imageDataB = null, currentImageDataForApp = null;
 // APP 模式专用：存储从主画布同步过来的图像数据
 let storedImageDataA = null;   // ImageData 对象
 let storedImageDataB = null;
+
+// ==================== 图片槽位相关全局变量 ====================
+let slotState = { count: 0, usedMask: 0, selected: null, fingerprints: [] };
+let slotReadState = null;              // 正在读取的槽位信息
+let slotImageCache = new Map();        // 内存缓存：slot -> {width, height, size, colorId, dataUrl, previewKind, fingerprint}
+let slotImageCacheScope = '';          // 用于区分不同设备/驱动的缓存作用域
+let slotPreviewPending = new Set();    // 正在写入但未完成的槽位集合
+let rleSupport = false;                // 设备是否支持 RLE 压缩传输
+let imageTransferActive = false;       // 是否正在传输图片（用于锁定UI）
+let imageRefreshPending = false;       // 🆕 屏幕刷新等待中
+let imageRefreshTimer = null;          // 🆕 刷新超时定时器
+let slotActionPending = false;         // 槽位操作（显示/删除等）进行中
+let slotActionTimer = null;            // 🆕 槽位操作超时定时器
+let slotReadTimer = null;
+let slotEraseAllPending = false;
+
+const MAX_SLOT_IMAGE_SIZE = 1024 * 1024;
+const DEFAULT_SLOT_READ_RAW_CHUNK_SIZE = 256;
+const SLOT_READ_TIMEOUT_MS = 5000;
+const SLOT_READ_INFO_TIMEOUT_MS = 8000;
+const SLOT_CHUNK_MAX_RETRIES = 2;
+const IMAGE_REFRESH_TIMEOUT_MS = 95000;
+const SLOT_IMAGE_CACHE_PREFIX = 'epd-slot-preview-v1:';
+const SLOT_PREVIEW_MAX_EDGE = 480;         // 🆕 预览缩略图最大边长
+const SLOT_PREVIEW_JPEG_QUALITY = 0.88;    // 🆕 JPEG 压缩质量
 
 // ==================== 工具函数 ====================
 function hex2bytes(hex) {
@@ -120,14 +154,404 @@ function resetVariables() {
     epdCharacteristic = null;
     txCharacteristic = null;
     cmdCharacteristic = null;
+    driverAuthorDetected = false;
     msgIndex = 0;
     const logEl = document.getElementById("log");
     if (logEl) logEl.innerHTML = '';
+    bleWriteChain = Promise.resolve();
+    currentPinsValue = '';
+    slotState = {
+        count: 0,
+        usedMask: 0,
+        selected: null,
+        fingerprints: []
+    };
+    if (slotReadTimer != null) clearTimeout(slotReadTimer);
+    slotReadTimer = null;
+    slotReadState = null;
+    slotImageCache = new Map();
+    slotImageCacheScope = '';
+    slotPreviewPending = new Set();
+    rleSupport = false;
+    imageTransferActive = false;
+    imageRefreshPending = false;
+    if (imageRefreshTimer != null) clearTimeout(imageRefreshTimer);
+    imageRefreshTimer = null;
+    slotActionPending = false;
+    slotEraseAllPending = false;
+    displayErrorActive = false;
+    if (slotActionTimer != null) clearTimeout(slotActionTimer);
+    slotActionTimer = null;
+    renderSlotGrid();
+}
+
+// ==================== RLE 压缩/解压 ====================
+function rleEncode(data, maxLiteral = 128) {
+    const input = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const output = [];
+    let offset = 0;
+    while (offset < input.length) {
+        let runLength = 1;
+        while (offset + runLength < input.length && runLength < 130 && input[offset + runLength] === input[offset]) {
+            runLength++;
+        }
+        if (runLength >= 3) {
+            output.push(0x80 | (runLength - 3), input[offset]);
+            offset += runLength;
+            continue;
+        }
+        const literalStart = offset;
+        let literalLength = 0;
+        while (offset < input.length && literalLength < maxLiteral &&
+            !(offset + 2 < input.length && input[offset] === input[offset + 1] && input[offset] === input[offset + 2])) {
+            offset++;
+            literalLength++;
+        }
+        if (literalLength === 0) {
+            literalLength = 1;
+            offset++;
+        }
+        output.push(literalLength - 1);
+        for (let index = literalStart; index < literalStart + literalLength; index++) output.push(input[index]);
+    }
+    return new Uint8Array(output);
+}
+
+function rleDecode(data) {
+    const input = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const output = [];
+    let offset = 0;
+    while (offset < input.length) {
+        const token = input[offset++];
+        if ((token & 0x80) !== 0) {
+            if (offset >= input.length) throw new Error('RLE repeat token is incomplete');
+            const count = (token & 0x7F) + 3;
+            const value = input[offset++];
+            for (let index = 0; index < count; index++) output.push(value);
+        } else {
+            const count = token + 1;
+            if (offset + count > input.length) throw new Error('RLE literal token is incomplete');
+            for (let index = 0; index < count; index++) output.push(input[offset++]);
+        }
+    }
+    return new Uint8Array(output);
+}
+
+// ==================== 槽位缓存管理 ====================
+// 判断蓝牙是否连接
+function isBleConnected() {
+    return gattServer != null && gattServer.connected && epdCharacteristic != null;
+}
+
+function getSlotImageCacheScope() {
+    const deviceId = bleDevice && (bleDevice.id || bleDevice.name) ? (bleDevice.id || bleDevice.name) : 'unknown-device';
+    const driver = document.getElementById('epddriver');
+    return `${deviceId}:${driver ? driver.value : 'unknown-driver'}`;
+}
+
+function getSlotImageCacheKey(slot) {
+    return `${SLOT_IMAGE_CACHE_PREFIX}${encodeURIComponent(getSlotImageCacheScope())}:${slot}`;
+}
+
+function loadSlotImageCache() {
+    const scope = getSlotImageCacheScope();
+    if (scope !== slotImageCacheScope) {
+        slotImageCache = new Map();
+        slotImageCacheScope = scope;
+    }
+
+    for (let slot = 0; slot < slotState.count; slot++) {
+        const used = (slotState.usedMask & (1 << slot)) !== 0;
+        const pending = slotPreviewPending.has(slot);
+        const fingerprint = slotState.fingerprints[slot] || null;
+
+        // 如果槽位未使用且不在等待中 → 清理缓存
+        if (!used && !pending) {
+            removeSlotImageCache(slot);
+            continue;
+        }
+
+        // 检查内存缓存是否与指纹匹配
+        const currentEntry = slotImageCache.get(slot);
+        if (used && !pending && currentEntry && !slotCacheMatchesFingerprint(currentEntry, fingerprint)) {
+            slotImageCache.delete(slot);
+            try { localStorage.removeItem(getSlotImageCacheKey(slot)); } catch (_) {}
+            addLog(`🔄 槽位 ${slot + 1} 指纹已变更，旧缓存已清除。`);
+        }
+
+        // 从 localStorage 加载
+        try {
+            const stored = localStorage.getItem(getSlotImageCacheKey(slot));
+            if (stored) {
+                const entry = JSON.parse(stored);
+                if (entry && entry.dataUrl && entry.dataUrl.startsWith('data:image/')) {
+                    // 再次校验指纹
+                    if (used && !pending && !slotCacheMatchesFingerprint(entry, fingerprint)) {
+                        localStorage.removeItem(getSlotImageCacheKey(slot));
+                        continue;
+                    }
+                    const cachedEntry = slotImageCache.get(slot);
+                    const currentSavedAt = cachedEntry && Number(cachedEntry.savedAt) || 0;
+                    const storedSavedAt = Number(entry.savedAt) || 0;
+                    if (!cachedEntry || storedSavedAt > currentSavedAt) {
+                        slotImageCache.set(slot, entry);
+                    }
+                }
+            }
+        } catch (error) {
+            console.warn('Failed to load slot image cache', error);
+            try { localStorage.removeItem(getSlotImageCacheKey(slot)); } catch (_) {}
+        }
+
+        // 如果槽位已使用且之前有 pending 标记，清除 pending
+        if (used && pending) {
+            slotPreviewPending.delete(slot);
+            const entry = slotImageCache.get(slot);
+            if (entry && entry.pending) {
+                saveSlotImageCache(slot, { ...entry, fingerprint, pending: false });
+            }
+        }
+    }
+}
+
+function saveSlotImageCache(slot, entry) {
+    slotImageCache.set(slot, entry);
+    const cacheKey = getSlotImageCacheKey(slot);
+    const serializedEntry = JSON.stringify(entry);
+    try {
+        localStorage.setItem(cacheKey, serializedEntry);
+        return true;
+    } catch (firstError) {
+        try {
+            localStorage.removeItem(cacheKey);
+            localStorage.setItem(cacheKey, serializedEntry);
+            return true;
+        } catch (error) {
+            console.warn('Failed to persist slot image cache', firstError, error);
+            addLog('浏览器缓存空间不足，本次预览仅在当前页面有效。');
+            return false;
+        }
+    }
+}
+
+function removeSlotImageCache(slot) {
+    slotPreviewPending.delete(slot);
+    slotImageCache.delete(slot);
+    try { localStorage.removeItem(getSlotImageCacheKey(slot)); } catch (_) { }
+}
+
+function clearAllSlotImageCaches() {
+    for (let slot = 0; slot < Math.max(slotState.count, 20); slot++) removeSlotImageCache(slot);
+    slotImageCache.clear();
+}
+
+function formatSlotBytes(size) {
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function slotColorName(colorId) {
+    return colorId === 2 ? '黑白' : colorId === 3 ? '黑白红' : colorId === 4 ? '黑白红黄' : colorId === 6 ? '黑白红黄蓝绿' :'黑白红黄绿蓝橙';
+}
+
+// ==================== 槽位辅助函数（指纹 / 预览） ====================
+
+function normalizeSlotFingerprint(value) {
+    return typeof value === 'string' && /^[0-9a-f]{8}$/i.test(value) ? value.toUpperCase() : null;
+}
+
+function slotCacheMatchesFingerprint(entry, fingerprint) {
+    return fingerprint == null || normalizeSlotFingerprint(entry && entry.fingerprint) === fingerprint;
+}
+
+function createSlotPreviewDataUrl(sourceImageData) {
+    const source = document.createElement('canvas');
+    source.width = sourceImageData.width;
+    source.height = sourceImageData.height;
+    source.getContext('2d').putImageData(sourceImageData, 0, 0);
+
+    const scale = Math.min(1, SLOT_PREVIEW_MAX_EDGE / Math.max(source.width, source.height));
+    const preview = document.createElement('canvas');
+    preview.width = Math.max(1, Math.round(source.width * scale));
+    preview.height = Math.max(1, Math.round(source.height * scale));
+    const previewCtx = preview.getContext('2d');
+    previewCtx.fillStyle = '#fff';
+    previewCtx.fillRect(0, 0, preview.width, preview.height);
+    previewCtx.drawImage(source, 0, 0, preview.width, preview.height);
+
+    const dataUrl = preview.toDataURL('image/jpeg', SLOT_PREVIEW_JPEG_QUALITY);
+    if (!dataUrl.startsWith('data:image/')) throw new Error('Canvas preview snapshot failed');
+    return dataUrl;
+}
+
+// ==================== 槽位数据旋转恢复（针对3.7寸特殊屏）====================
+function get1bppPixel(data, width, x, y) {
+    const pixelIndex = y * width + x;
+    const byteIndex = pixelIndex >> 3;
+    const shift = 7 - (pixelIndex & 0x07);
+    return (data[byteIndex] >> shift) & 0x01;
+}
+function set1bppPixel(data, width, x, y, value) {
+    const pixelIndex = y * width + x;
+    const byteIndex = pixelIndex >> 3;
+    const mask = 0x80 >> (pixelIndex & 0x07);
+    if (value) data[byteIndex] |= mask;
+    else data[byteIndex] &= ~mask;
+}
+function get2bppPixel(data, width, x, y) {
+    const pixelIndex = y * width + x;
+    const byteIndex = pixelIndex >> 2;
+    const shift = 6 - ((pixelIndex & 0x03) * 2);
+    return (data[byteIndex] >> shift) & 0x03;
+}
+function set2bppPixel(data, width, x, y, value) {
+    const pixelIndex = y * width + x;
+    const byteIndex = pixelIndex >> 2;
+    const shift = 6 - ((pixelIndex & 0x03) * 2);
+    data[byteIndex] = (data[byteIndex] & ~(0x03 << shift)) | ((value & 0x03) << shift);
+}
+
+function restoreRotated1bpp(data, width, height) {
+    const output = new Uint8Array(Math.ceil(width * height / 8)).fill(0xFF);
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            set1bppPixel(output, width, x, y, get1bppPixel(data, height, y, width - 1 - x));
+        }
+    }
+    return output;
+}
+
+function restoreRotated2bpp(data, width, height) {
+    const output = new Uint8Array(Math.ceil(width * height / 4));
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            set2bppPixel(output, width, x, y, get2bppPixel(data, height, y, width - 1 - x));
+        }
+    }
+    return output;
+}
+
+function normalizeSlotImageData(meta) {
+    const driverSelect = document.getElementById('epddriver');
+    const isGDEM037F51 = (driverSelect.value === '0d');
+    const isGDEY037Z03 = (driverSelect.value === '0e' || driverSelect.value === '0f' || driverSelect.value === '12');
+    const needsNativeRotation = meta.width === 416 && meta.height === 240 && (isGDEM037F51 || isGDEY037Z03);
+    if (!needsNativeRotation) return meta.data;
+
+    if (meta.colorId === 2) return restoreRotated2bpp(meta.data, meta.width, meta.height);
+    if (meta.colorId === 0) return restoreRotated1bpp(meta.data, meta.width, meta.height);
+    if (meta.colorId === 1) {
+        const planeSize = Math.floor(meta.data.length / 2);
+        const output = new Uint8Array(meta.data.length);
+        output.set(restoreRotated1bpp(meta.data.slice(0, planeSize), meta.width, meta.height), 0);
+        output.set(restoreRotated1bpp(meta.data.slice(planeSize), meta.width, meta.height), planeSize);
+        return output;
+    }
+    return meta.data;
+}
+
+function decodeUC8159SlotData(data, width, height) {
+    const imageData = new ImageData(width, height);
+    for (let pixel = 0; pixel < width * height; pixel++) {
+        const packed = data[pixel >> 1];
+        const value = (pixel & 1) === 0 ? (packed >> 4) & 0x0F : packed & 0x0F;
+        const index = pixel * 4;
+        if (value === 0x04) {
+            imageData.data[index] = 255;
+            imageData.data[index + 1] = 0;
+            imageData.data[index + 2] = 0;
+        } else {
+            const channel = value === 0x00 ? 0 : 255;
+            imageData.data[index] = channel;
+            imageData.data[index + 1] = channel;
+            imageData.data[index + 2] = channel;
+        }
+        imageData.data[index + 3] = 255;
+    }
+    return imageData;
+}
+
+// 缓存当前画布内容作为槽位预览（存入槽位时调用）
+function cacheCurrentSlotPreview(slot, processedData, mode) {
+    try {
+        const scope = getSlotImageCacheScope();
+        if (scope !== slotImageCacheScope) {
+            slotImageCache = new Map();
+            slotImageCacheScope = scope;
+        }
+        const sourceImageData = ditherSourceImageData &&
+            ditherSourceImageData.width === canvas.width && ditherSourceImageData.height === canvas.height ?
+            ditherSourceImageData :
+            ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const dataUrl = createSlotPreviewDataUrl(sourceImageData);
+        const colorId = mode === 'blackWhiteColor' ? 2 : mode === 'threeColor' ? 3 : mode === 'fourColor' ? 4 : mode === 'sixColor' ? 6 : 7;
+        slotPreviewPending.add(slot);
+        saveSlotImageCache(slot, {
+            width: canvas.width,
+            height: canvas.height,
+            size: processedData.length,
+            colorId,
+            dataUrl,
+            previewKind: 'original',
+            fingerprint: null,
+            pending: true,
+            savedAt: new Date().getTime()
+        });
+        renderSlotGrid(true);
+        addLog(`槽位 ${slot + 1} 原图预览已生成，无需再次回读。`);
+    } catch (error) {
+        console.warn('Failed to cache current slot preview', error);
+        removeSlotImageCache(slot);
+        addLog(`槽位 ${slot + 1} 预览生成失败：${error.message || error}`);
+    }
+}
+
+// ==================== 屏幕刷新超时管理 ====================
+
+function cancelImageRefreshWait() {
+    if (imageRefreshTimer != null) {
+        clearTimeout(imageRefreshTimer);
+        imageRefreshTimer = null;
+    }
+    imageRefreshPending = false;
+}
+
+function startImageRefreshWait() {
+    cancelImageRefreshWait();
+    imageRefreshPending = true;
+    imageRefreshTimer = setTimeout(() => {
+        if (!imageRefreshPending) return;
+        imageRefreshPending = false;
+        imageRefreshTimer = null;
+        imageTransferActive = false;
+        updateButtonStatus();
+        setStatus('⚠️ 屏幕刷新完成通知超时，控制按钮已恢复。');
+        addLog('⚠️ 屏幕刷新完成通知超时（95s），控制按钮已恢复；请确认屏幕已停止刷新后再操作。');
+    }, IMAGE_REFRESH_TIMEOUT_MS);
+}
+
+function completeImageRefresh() {
+    if (!imageRefreshPending) return false;
+
+    cancelImageRefreshWait();
+    imageTransferActive = false;
+    updateButtonStatus();
+    const totalTime = (Date.now() - startTime) / 1000.0;
+    setStatus(`✅ 屏幕刷新完成！总耗时: ${totalTime.toFixed(1)}s`);
+    addLog(`✅ 屏幕刷新完成，可以继续操作。总耗时: ${totalTime.toFixed(1)}s`);
+    const statusEl = document.getElementById('status');
+    if (statusEl) {
+        setTimeout(() => {
+            statusEl.parentElement.style.display = 'none';
+        }, 5000);
+    }
+    return true;
 }
 
 // ==================== 蓝牙写入（带防冲突锁）====================
 let writeInProgress = false;
-const WRITE_DELAY_MS = 50;
+const WRITE_DELAY_MS = 20;
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 async function write(cmd, data, withResponse = true) {
@@ -138,14 +562,15 @@ async function write(cmd, data, withResponse = true) {
     }
     writeInProgress = true;
     try {
-        const payload = [cmd];
+        let body = new Uint8Array(0);
         if (data) {
             if (typeof data === 'string') data = hex2bytes(data);
-            if (data instanceof Uint8Array) data = Array.from(data);
-            payload.push(...data);
+            if (data instanceof Uint8Array) body = data;else body = Uint8Array.from(data);
         }
-        addLog(bytes2hex(payload), '⇑');
-        const dataBuffer = Uint8Array.from(payload);
+        const dataBuffer = new Uint8Array(body.length + 1);
+        dataBuffer[0] = cmd;
+        dataBuffer.set(body, 1);
+        if (cmd !== EpdCmd.WRITE_IMG || withResponse) addLog(bytes2hex(dataBuffer), '⇑');
         
         // ==============================================
         // 🔥 核心兼容写法：自动适配所有浏览器/设备
@@ -165,7 +590,7 @@ async function write(cmd, data, withResponse = true) {
                 await epdCharacteristic.writeValue(dataBuffer);
             }
         }
-        await sleep(WRITE_DELAY_MS);
+        if (withResponse && WRITE_DELAY_MS > 0) await sleep(WRITE_DELAY_MS);
         return true;
     } catch (e) {
         console.error(e);
@@ -178,18 +603,24 @@ async function write(cmd, data, withResponse = true) {
 
 // ==================== 图像传输（支持CRC模式）====================
 async function writeImage(data, step = 'bw') {
-    const mtu = parseInt(document.getElementById('mtusize').value) - 2;
-    const interleavedCount = parseInt(document.getElementById('interleavedcount').value);
-    const count = Math.round(data.length / mtu);
+    const configuredMtu = parseInt(document.getElementById('mtusize').value, 10);
+    const configuredInterval = parseInt(document.getElementById('interleavedcount').value, 10);
+    const mtu = Math.max(1, (Number.isFinite(configuredMtu) ? configuredMtu : 20) - 2);
+    const interleavedCount = Number.isFinite(configuredInterval) && configuredInterval >= 0
+        ? configuredInterval
+        : 20;
+    const count = Math.ceil(data.length / mtu);
     let chunkIdx = 0;
     let noReplyCount = interleavedCount;
     for (let i = 0; i < data.length; i += mtu) {
-        const currentTime = (Date.now() - startTime) / 1000.0;
-        setStatus(`${step === 'bw' ? '黑白' : '颜色'}块: ${chunkIdx + 1}/${count + 1}, 总用时: ${currentTime}s`);
-        const payload = [
-            (step === 'bw' ? 0x0F : 0x00) | (i === 0 ? 0x00 : 0xF0),
-            ...data.slice(i, i + mtu)
-        ];
+        if (chunkIdx % 10 === 0 || chunkIdx + 1 === count) {
+            const currentTime = (Date.now() - startTime) / 1000.0;
+            setStatus(`${step === 'bw' ? '黑白' : '颜色'}块: ${chunkIdx + 1}/${count}, 总用时: ${currentTime}s`);
+        }
+        const chunk = data.subarray(i, Math.min(i + mtu, data.length));
+        const payload = new Uint8Array(chunk.length + 1);
+        payload[0] = (step === 'bw' ? 0x0F : 0x00) | (i === 0 ? 0x00 : 0xF0);
+        payload.set(chunk, 1);
         if (noReplyCount > 0) {
             await write(EpdCmd.WRITE_IMG, payload, false);
             noReplyCount--;
@@ -201,6 +632,9 @@ async function writeImage(data, step = 'bw') {
     }
 }
 
+var a0_fix = 0;
+let driverAuthorDetected = false;    // 是否已识别驱动作者
+let deviceDriverValue = null;    // 存储设备上报的驱动值（如 "06"）
 // 使用CRC校验传输（如果固件支持）
 async function writeImageCRC(data, step = 'bw') {
     const stepName = step === 'bw' ? '黑白' : '颜色';
@@ -208,7 +642,7 @@ async function writeImageCRC(data, step = 'bw') {
         const epdDriverSelect = document.getElementById('epddriver');
         const epdDriverPreset = document.getElementById('driverPreset');
         addLog(`驱动预设: ${epdDriverPreset.value}  驱动ID:${epdDriverSelect.value}`);
-        if(epdDriverPreset.value == "tsl0922" && epdDriverSelect.value == "13") data = JD79660JiaoCuoYuChuLi(data);
+        if(epdDriverPreset.value == "tsl0922" && epdDriverSelect.value == "13" && a0_fix != 1) data = JD79660JiaoCuoYuChuLi(data);
         await BleTransfer.sendImageWithResume(data, step, (sent, total, speedInfo) => {
             if (speedInfo) {
                 setStatus(`${stepName}块(CRC): ${sent}/${total}, ${BleTransfer.getSpeedString()}, ${speedInfo.elapsed}s`);
@@ -231,6 +665,8 @@ async function setDriver() {
     await write(EpdCmd.SET_PINS, document.getElementById("epdpins").value);
     await write(EpdCmd.INIT, document.getElementById("epddriver").value);
     addLog("驱动配置已设置");
+    a0_fix = 0;   // 重置交错处理标志，因为驱动已切换
+    if(document.getElementById('driverPreset').value = "tsl0922") addLog("驱动配置已设置，a0_fix 已重置为 0");
 }
 
 function getWeekStart() {
@@ -268,7 +704,29 @@ async function syncTimeLegacy() {
     if (!confirm('确认切换到老款时钟模式？\n\n⚠️ 警告：时钟模式会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 此模式仅适用于UC8179 7.5寸屏幕\n• 费电')) return;
     await sendTimeCommand(3, '老款时钟模式');
 }
-
+/*
+async function syncTime(mode) {
+    if (mode === 2 && !confirm("提醒：时钟模式目前使用全刷实现，此功能目前多用于修复老化屏残影问题，不建议长期开启，是否继续？")) return;
+    if (mode === 1) {
+        await syncHolidayData();
+        await sleep(200);
+    }
+    const timestamp = Math.floor(Date.now() / 1000);
+    const data = new Uint8Array([
+        (timestamp >> 24) & 0xFF,
+        (timestamp >> 16) & 0xFF,
+        (timestamp >> 8) & 0xFF,
+        timestamp & 0xFF,
+        -(new Date().getTimezoneOffset() / 60),
+        mode
+    ]);
+    if (await write(EpdCmd.SET_TIME, data)) {
+        addLog("时间已同步！");
+        addLog("屏幕刷新完成前请不要操作。");
+    }
+    await sendTimeCommand(mode, mode === 1 ? '日历模式' : '时钟模式');
+}
+*/
 async function syncTime(mode) {
     if (mode === 2 && !confirm("提醒：时钟模式目前使用全刷实现，此功能目前多用于修复老化屏残影问题，不建议长期开启，是否继续？")) return;
     if (mode === 1) {
@@ -292,12 +750,11 @@ async function syncTime(mode) {
 
     // 发送时间（仅一次）
     if (await write(EpdCmd.SET_TIME, data)) {
-        addLog(`时间已同步！模式：${mode === 1 ? '日历' : '时钟'}`);
+        addLog(`时间已同步！模式：${mode === 1 ? '日历模式' : '时钟模式'}`);
         addLog(`星期第一天已设置为：${weekDays[weekStart]}`);
         addLog("屏幕刷新完成前请不要操作。");
     }
 }
-
 // ==================== 新增：无弹窗同步时间 ====================
 async function syncTimeOnly() {
     // 仅对 Web 模式有效，APP 模式下该按钮应被隐藏
@@ -332,6 +789,591 @@ async function sendcmd() {
     const bytes = hex2bytes(cmdTXT);
     await write(bytes[0], bytes.length > 1 ? bytes.slice(1) : null);
     addLog("命令已发送");
+}
+
+// ==================== 槽位核心功能 ====================
+function setSlotActionPending(pending) {
+    slotActionPending = pending;
+    // 清除旧定时器
+    if (slotActionTimer != null) {
+        clearTimeout(slotActionTimer);
+        slotActionTimer = null;
+    }
+    if (pending) {
+        // 95 秒超时自动解锁，防止永久卡死
+        slotActionTimer = setTimeout(() => {
+            slotActionPending = false;
+            slotEraseAllPending = false;
+            slotActionTimer = null;
+            updateButtonStatus();
+            addLog('槽位操作等待超时（95s），控制按钮已自动恢复。');
+        }, 95000);
+    }
+    updateButtonStatus();
+}
+
+function applySlotsMessage(message) {
+    // 格式: slots=count usedMask [selected] [fingerprint1] [fingerprint2] ...
+    // 例如: slots=5 0x1F 0 ABCD1234 5678EFGH ...
+    const parts = message.trim().split(/\s+/);
+    const countMatch = /^slots=(\d+)$/.exec(parts[0] || '');
+    if (!countMatch || parts.length < 2 || !/^(?:0x[0-9a-f]+|\d+)$/i.test(parts[1])) {
+        return false;
+    }
+
+    const count = parseInt(countMatch[1], 10);
+    let fingerprintStart = 2;
+    let selected = null;
+    // 如果第三个字段是纯数字（0~255），则它是 selected 索引
+    if (parts[2] != null && /^\d+$/.test(parts[2])) {
+        selected = parseInt(parts[2], 10);
+        fingerprintStart = 3;
+    }
+    // 提取指纹（每个指纹应为 8 位十六进制）
+    const fingerprints = parts.slice(fingerprintStart, fingerprintStart + count)
+        .map(s => /^[0-9a-f]{8}$/i.test(s) ? s.toUpperCase() : null);
+
+    slotState = {
+        count,
+        usedMask: Number(parts[1]),
+        selected,
+        fingerprints
+    };
+
+    // 加载缓存（会自动校验指纹）
+    loadSlotImageCache();
+
+    // 处理擦除全部完成
+    const eraseAllCompleted = slotEraseAllPending && slotState.usedMask === 0;
+    if (slotEraseAllPending && !eraseAllCompleted) {
+        updateButtonStatus();
+        return true;
+    }
+    slotEraseAllPending = false;
+    if (slotActionPending) setSlotActionPending(false);
+    else updateButtonStatus();
+
+    if (eraseAllCompleted) {
+        clearAllSlotImageCaches();
+        const status = document.getElementById('slotReadStatus');
+        if (status) {
+            status.hidden = false;
+            status.textContent = '✅ 全部图片槽位已擦除。';
+        }
+        addLog('✅ 全部图片槽位擦除完成。');
+    }
+    renderSlotGrid();
+    return true;
+}
+
+async function refreshSlots() {
+    if (!isBleConnected()) return;
+    addLog('正在读取图片槽位...');
+    await write(EpdCmd.GET_SLOTS);
+}
+
+function renderSlotGrid(forceDisabled = imageTransferActive || slotActionPending || slotReadState !== null) {
+    const grid = document.getElementById('slotGrid');
+    const summary = document.getElementById('slotSummary');
+    const hint = document.getElementById('slotHint');
+    if (!grid || !summary || !hint) return;
+
+    grid.replaceChildren();
+    if (!isBleConnected()) {
+        summary.textContent = '连接设备后读取槽位';
+        hint.textContent = '图片保存在设备外置 Flash 中';
+        return;
+    }
+
+    if (slotState.count === 0) {
+        summary.textContent = '未识别到外置 Flash';
+        hint.textContent = '请检查 Flash 供电及 P0.12 至 P0.15 连线';
+        return;
+    }
+
+    let usedCount = 0;
+    for (let slot = 0; slot < slotState.count; slot++) {
+        const used = (slotState.usedMask & (1 << slot)) !== 0;
+        const cached = slotImageCache.get(slot) || null;
+        const previewPending = !used && cached && slotPreviewPending.has(slot);
+        if (used) usedCount++;
+
+        const item = document.createElement('div');
+        item.className = used ? 'slot-item used' : 'slot-item';
+        if (slotState.selected === slot) item.classList.add('selected');
+
+        const label = document.createElement('div');
+        label.className = 'slot-label';
+        const title = document.createElement('strong');
+        title.textContent = `槽位 ${slot + 1}`;
+        const state = document.createElement('span');
+        state.className = 'slot-state';
+        state.textContent = `${used ? '已存图片' : previewPending ? '正在存入' : '空闲'}${cached ? ' · 已缓存' : used ? ' · 未读取' : ''}${slotState.selected === slot ? ' · 当前' : ''}`;
+        label.append(title, state);
+
+        const actions = document.createElement('div');
+        actions.className = 'slot-actions';
+
+        const saveButton = document.createElement('button');
+        saveButton.type = 'button';
+        saveButton.className = 'primary';
+        saveButton.textContent = used ? '覆盖' : '存入';
+        saveButton.disabled = forceDisabled;
+        saveButton.addEventListener('click', () => saveImageToSlot(slot));
+
+        const displayButton = document.createElement('button');
+        displayButton.type = 'button';
+        displayButton.className = 'secondary';
+        displayButton.textContent = '显示';
+        displayButton.disabled = forceDisabled || !used;
+        displayButton.addEventListener('click', () => displayImageSlot(slot));
+
+        const readControl = document.createElement('div');
+        readControl.className = cached ? 'slot-read-control cached' : 'slot-read-control';
+        const readButton = document.createElement('button');
+        readButton.type = 'button';
+        readButton.className = 'secondary';
+        readButton.textContent = '读取';
+        readButton.disabled = forceDisabled || !used;
+        readButton.addEventListener('click', () => readImageSlot(slot));
+
+        const hoverPreview = document.createElement('div');
+        hoverPreview.className = cached ? 'slot-hover-preview cached' : 'slot-hover-preview empty';
+        hoverPreview.id = `slotPreviewTooltip${slot}`;
+        hoverPreview.setAttribute('role', 'tooltip');
+        readButton.setAttribute('aria-describedby', hoverPreview.id);
+        readButton.title = cached ? '悬停预览已缓存图片' : '点击读取图片并生成网页缓存';
+        if (cached) {
+            const previewImage = document.createElement('img');
+            previewImage.src = cached.dataUrl;
+            previewImage.alt = `槽位 ${slot + 1} 缓存预览`;
+            const previewMeta = document.createElement('span');
+            const previewKind = cached.previewKind === 'original' ? '原图' : '设备回读';
+            previewMeta.textContent = `${cached.width} × ${cached.height} · ${slotColorName(cached.colorId)} · ${previewKind}`;
+            hoverPreview.append(previewImage, previewMeta);
+        } else {
+            hoverPreview.textContent = used ? '尚未读取，点击“读取”后可悬停预览' : '空槽位，无图片可读取';
+        }
+        readControl.append(readButton, hoverPreview);
+
+        const freeButton = document.createElement('button');
+        freeButton.type = 'button';
+        freeButton.className = 'secondary slot-delete';
+        freeButton.textContent = '删除';
+        freeButton.disabled = forceDisabled || !used;
+        freeButton.addEventListener('click', () => freeImageSlot(slot));
+
+        actions.append(saveButton, displayButton, readControl, freeButton);
+        item.append(label, actions);
+        grid.appendChild(item);
+    }
+
+    summary.textContent = `${slotState.count} 个槽位，已使用 ${usedCount} 个`;
+    hint.textContent = '“存入”会同时刷新屏幕并保存当前画布';
+}
+
+/*
+async function saveImageToSlot(slot) {
+    if (imageTransferActive || slotActionPending) return;
+    const imageFile = document.getElementById('imageFile');
+    if (!imageFile || imageFile.files.length === 0) {
+        alert('请先选择图片，再存入图片槽。');
+        addLog(`槽位 ${slot + 1} 未存入：尚未选择图片。`);
+        return;
+    }
+    const used = (slotState.usedMask & (1 << slot)) !== 0;
+    if (used && !confirm(`槽位 ${slot + 1} 已有图片，确认覆盖？`)) return;
+    await sendimg({ slot });
+}*/
+async function saveImageToSlot(slot) {
+    if (imageTransferActive || slotActionPending) return;
+    const imageFile = document.getElementById('imageFile');
+    if (!imageFile || imageFile.files.length === 0) {
+        alert('请先选择图片，再存入图片槽。');
+        addLog(`槽位 ${slot + 1} 未存入：尚未选择图片。`);
+        return;
+    }
+    const used = (slotState.usedMask & (1 << slot)) !== 0;
+    if (used && !confirm(`槽位 ${slot + 1} 已有图片，确认覆盖？`)) return;
+    // 传入 noRefresh: true
+    await sendimg({ slot, noRefresh: true });
+}
+
+async function freeImageSlot(slot) {
+    if (imageTransferActive || slotActionPending) return;
+    if (!confirm(`确认删除槽位 ${slot + 1} 的图片？`)) return;
+    setSlotActionPending(true);
+    if (await write(EpdCmd.FREE_SLOT, new Uint8Array([slot]))) {
+        removeSlotImageCache(slot);
+        renderSlotGrid(true);
+        addLog(`槽位 ${slot + 1} 删除命令已发送。`);
+    } else {
+        setSlotActionPending(false);
+    }
+}
+
+async function freeAllImageSlots() {
+    if (imageTransferActive || slotActionPending || slotReadState || slotState.usedMask === 0) return;
+    if (!confirm('确认擦除全部图片槽位？所有已保存图片都将永久删除，此操作不可恢复。')) return;
+
+    slotEraseAllPending = true;
+    setSlotActionPending(true);
+    const status = document.getElementById('slotReadStatus');
+    status.hidden = false;
+    status.textContent = '正在擦除全部图片槽位，请勿断开连接...';
+    if (await write(EpdCmd.FREE_SLOT, new Uint8Array([0xFF]))) {
+        addLog('全部图片槽位擦除命令已发送。');
+    } else {
+        slotEraseAllPending = false;
+        setSlotActionPending(false);
+        status.textContent = '全部槽位擦除命令发送失败。';
+    }
+}
+
+async function displayImageSlot(slot) {
+    if (imageTransferActive || slotActionPending) return;
+    setSlotActionPending(true);
+    if (await write(EpdCmd.SET_SLOT, new Uint8Array([1, slot]))) {
+        addLog(`已请求设备显示槽位 ${slot + 1}。`);
+    } else {
+        setSlotActionPending(false);
+    }
+}
+
+/*
+async function startSlotSlide(randomMode = false) {
+    const input = document.getElementById('slotSlideMinutes');
+    const minutes = Math.max(1, Math.min(65535, parseInt(input.value, 10) || 1));
+    input.value = minutes;
+    if (await write(EpdCmd.SET_SLIDE, new Uint8Array([minutes >> 8, minutes & 0xFF, randomMode ? 1 : 0]))) {
+        addLog(`${randomMode ? '随机' : '顺序'}轮播已启动...`);
+        return true;
+    }
+}
+*/
+
+async function stopSlotSlide() {
+    if (await write(EpdCmd.SET_SLIDE, new Uint8Array([0, 0]))) {
+        addLog('图片轮播已停止。');
+    }
+}
+
+// ==================== 读取槽位图片（分块接收）====================
+function clearSlotReadTimer() {
+    if (slotReadTimer != null) clearTimeout(slotReadTimer);
+    slotReadTimer = null;
+}
+
+function failSlotImageRead(message) {
+    clearSlotReadTimer();
+    slotReadState = null;
+    const status = document.getElementById('slotReadStatus');
+    status.hidden = false;
+    status.textContent = message;
+    addLog(message);
+    updateButtonStatus();
+}
+
+function armSlotChunkTimeout(index) {
+    clearSlotReadTimer();
+    const state = slotReadState;
+    slotReadTimer = setTimeout(() => {
+        if (slotReadState === state) retrySlotChunk(index, '接收超时');
+    }, SLOT_READ_TIMEOUT_MS);
+}
+
+function retrySlotChunk(index, reason) {
+    const state = slotReadState;
+    if (!state || state.pending || state.nextChunkIndex !== index) return;
+
+    clearSlotReadTimer();
+    state.expectedChunk = null;
+    if (state.chunkRetries >= SLOT_CHUNK_MAX_RETRIES) {
+        failSlotImageRead(`第 ${index + 1} 个数据块${reason}，重试 ${SLOT_CHUNK_MAX_RETRIES} 次后读取已停止。`);
+        return;
+    }
+
+    state.chunkRetries++;
+    addLog(`第 ${index + 1} 个数据块${reason}，正在重试 (${state.chunkRetries}/${SLOT_CHUNK_MAX_RETRIES})。`);
+    void requestSlotChunk(index, true);
+}
+
+async function requestSlotChunk(index, retry = false) {
+    const state = slotReadState;
+    if (!state || state.pending) return;
+
+    if (!retry) state.chunkRetries = 0;
+    state.nextChunkIndex = index;
+    state.expectedChunk = null;
+    armSlotChunkTimeout(index);
+    const request = new Uint8Array([state.slot, (index >> 8) & 0xFF, index & 0xFF]);
+    if (!await write(EpdCmd.GET_IMAGE, request, false) && slotReadState === state && state.nextChunkIndex === index) {
+        retrySlotChunk(index, '请求失败');
+    }
+}
+
+function beginSlotImageRead(message) {
+    const match = /^img=(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(\d+))?$/.exec(message.trim());
+    if (!match) return false;
+
+    const slot = parseInt(match[1], 10);
+    if (slotReadState && !slotReadState.pending && slotReadState.slot === slot) return true;
+
+    const size = parseInt(match[4], 10);
+    if (!Number.isFinite(size) || size <= 0 || size > MAX_SLOT_IMAGE_SIZE) {
+        failSlotImageRead(`槽位图片大小异常：${size} 字节`);
+        return true;
+    }
+
+    const startedAt = slotReadState && slotReadState.startedAt ?
+        slotReadState.startedAt :
+        new Date().getTime();
+    clearSlotReadTimer();
+    slotReadState = {
+        slot,
+        width: parseInt(match[2], 10),
+        height: parseInt(match[3], 10),
+        size,
+        colorId: parseInt(match[5], 10),
+        data: new Uint8Array(size),
+        received: 0,
+        expectedChunk: null,
+        nextChunkIndex: 0,
+        chunkRetries: 0,
+        nextLogPercent: 10,
+        rawChunkSize: match[6] == null ? DEFAULT_SLOT_READ_RAW_CHUNK_SIZE : parseInt(match[6], 10),
+        startedAt,
+        pending: false
+    };
+
+    if (!Number.isFinite(slotReadState.rawChunkSize) || slotReadState.rawChunkSize <= 0 ||
+        slotReadState.rawChunkSize > 4096) {
+        failSlotImageRead(`槽位数据块大小异常：${slotReadState.rawChunkSize}`);
+        return true;
+    }
+
+    const status = document.getElementById('slotReadStatus');
+    status.hidden = false;
+    status.textContent = `槽位 ${slotReadState.slot + 1}：准备接收 ${formatSlotBytes(size)}`;
+    void requestSlotChunk(0);
+    return true;
+}
+
+function beginSlotChunk(message) {
+    if (!slotReadState) return false;
+    const match = /^chunk=(\d+)\s+len=(\d+)(?:\s+rle=(\d+))?$/.exec(message.trim());
+    if (!match) return false;
+
+    const index = parseInt(match[1], 10);
+    if (index !== slotReadState.nextChunkIndex) {
+        failSlotImageRead(`数据块序号异常：应为 ${slotReadState.nextChunkIndex + 1}，实际为 ${index + 1}。`);
+        return true;
+    }
+
+    slotReadState.expectedChunk = {
+        index,
+        length: parseInt(match[2], 10),
+        compressed: match[3] === '1',
+        received: 0,
+        parts: []
+    };
+    armSlotChunkTimeout(index);
+    return true;
+}
+
+function receiveSlotChunk(data) {
+    if (!slotReadState || !slotReadState.expectedChunk) return false;
+
+    const expected = slotReadState.expectedChunk;
+    if (expected.received + data.length > expected.length) {
+        failSlotImageRead(`第 ${expected.index + 1} 个数据块长度异常，读取已停止。`);
+        return true;
+    }
+
+    expected.parts.push(data.slice());
+    expected.received += data.length;
+    if (expected.received < expected.length) {
+        armSlotChunkTimeout(expected.index);
+        return true;
+    }
+
+    const chunkData = new Uint8Array(expected.length);
+    let chunkOffset = 0;
+    for (const part of expected.parts) {
+        chunkData.set(part, chunkOffset);
+        chunkOffset += part.length;
+    }
+    slotReadState.expectedChunk = null;
+
+    let decoded;
+    try {
+        decoded = expected.compressed ? rleDecode(chunkData) : chunkData;
+    } catch (error) {
+        console.error(error);
+        failSlotImageRead(`第 ${expected.index + 1} 个 RLE 数据块解析失败。`);
+        return true;
+    }
+
+    const remaining = slotReadState.size - slotReadState.received;
+    const expectedRawLength = Math.min(slotReadState.rawChunkSize, remaining);
+    if (decoded.length !== expectedRawLength) {
+        failSlotImageRead(`第 ${expected.index + 1} 个数据块解压长度异常。`);
+        return true;
+    }
+
+    slotReadState.data.set(decoded, slotReadState.received);
+    slotReadState.received += decoded.length;
+    const percent = Math.round(slotReadState.received * 100 / slotReadState.size);
+    const status = document.getElementById('slotReadStatus');
+    status.hidden = false;
+    status.textContent = `正在读取槽位 ${slotReadState.slot + 1}：${percent}% (${formatSlotBytes(slotReadState.received)} / ${formatSlotBytes(slotReadState.size)})`;
+
+    if (percent >= slotReadState.nextLogPercent || slotReadState.received === slotReadState.size) {
+        addLog(`槽位 ${slotReadState.slot + 1} 读取进度：${percent}%`, '⇓');
+        while (slotReadState.nextLogPercent <= percent) slotReadState.nextLogPercent += 10;
+    }
+
+    if (slotReadState.received === slotReadState.size) {
+        finishSlotImageRead();
+    } else {
+        void requestSlotChunk(expected.index + 1);
+    }
+    return true;
+}
+
+function finishSlotImageRead() {
+    const meta = slotReadState;
+    const elapsed = (new Date().getTime() - meta.startedAt) / 1000.0;
+    clearSlotReadTimer();
+    slotReadState = null;
+    try {
+        const mode = meta.colorId === 2 ? 'blackWhiteColor' : meta.colorId === 3 ? 'threeColor' : meta.colorId === 4 ? 'fourColor' : meta.colorId === 6 ? 'sixColor' : 'sevenColor';
+        const normalized = normalizeSlotImageData(meta);
+        const driverValue = document.getElementById('epddriver').value.toLowerCase();
+        const imageData = (driverValue === '08' || driverValue === '09') ?
+            decodeUC8159SlotData(normalized, meta.width, meta.height) :
+            decodeProcessedData(normalized, meta.width, meta.height, mode);
+        const existingPreview = slotImageCache.get(meta.slot);
+        if (!existingPreview || existingPreview.previewKind !== 'original') {
+            saveSlotImageCache(meta.slot, {
+                width: meta.width,
+                height: meta.height,
+                size: meta.size,
+                colorId: meta.colorId,
+                dataUrl: createSlotPreviewDataUrl(imageData),
+                previewKind: 'device',
+                fingerprint: slotState.fingerprints[meta.slot] || null,
+                savedAt: new Date().getTime()
+            });
+        }
+        renderSlotGrid();
+
+        const status = document.getElementById('slotReadStatus');
+        status.hidden = false;
+        status.textContent = `槽位 ${meta.slot + 1} 读取完成，悬停“读取”按钮即可预览。耗时 ${elapsed}s。`;
+        addLog(`槽位 ${meta.slot + 1} 图片已缓存，耗时: ${elapsed}s。`);
+    } catch (error) {
+        console.error(error);
+        const status = document.getElementById('slotReadStatus');
+        status.hidden = false;
+        status.textContent = '图片数据解析失败。';
+    } finally {
+        updateButtonStatus();
+    }
+}
+
+async function readImageSlot(slot) {
+    if (slotImageCache.has(slot)) {
+        addLog(`槽位 ${slot + 1} 已有网页缓存，悬停“读取”按钮即可预览。`);
+        return;
+    }
+    if (slotReadState) {
+        addLog('已有槽位图片正在读取，请稍候。');
+        return;
+    }
+    if (imageTransferActive || slotActionPending) return;
+
+    const status = document.getElementById('slotReadStatus');
+    status.hidden = false;
+    status.textContent = `正在读取槽位 ${slot + 1}...`;
+    slotReadState = {
+        slot,
+        pending: true,
+        infoAttempts: 0,
+        startedAt: new Date().getTime()
+    };
+    updateButtonStatus();
+    await requestSlotImageInfo(slotReadState);
+}
+
+async function requestSlotImageInfo(state) {
+    if (!state || slotReadState !== state || !state.pending) return;
+
+    state.infoAttempts++;
+    clearSlotReadTimer();
+    slotReadTimer = setTimeout(() => {
+        if (slotReadState !== state || !state.pending) return;
+        if (state.infoAttempts < 2) {
+            addLog('设备未返回图片信息，正在重试。');
+            void requestSlotImageInfo(state);
+        } else {
+            failSlotImageRead('设备未返回图片信息，读取超时。');
+        }
+    }, SLOT_READ_INFO_TIMEOUT_MS);
+
+    if (!await write(EpdCmd.GET_IMAGE, new Uint8Array([state.slot]), false) && slotReadState === state) {
+        if (state.infoAttempts < 2) {
+            addLog('读取命令发送失败，正在重试。');
+            void requestSlotImageInfo(state);
+        } else {
+            failSlotImageRead('读取命令发送失败。');
+        }
+    }
+}
+
+// ==================== 错误处理 ====================
+
+function handleDisplayError(code) {
+    const busyTimeout = code === 'busy_timeout';
+    const message = busyTimeout
+        ? '⚠️ 屏幕 BUSY 等待超时，当前驱动可能与屏幕不匹配。请切换对应屏幕驱动后重试，蓝牙连接将保持。'
+        : '⚠️ 设备正在执行其他显示操作，请稍后重试。';
+
+    cancelImageRefreshWait();
+    imageTransferActive = false;
+    if (slotActionPending) setSlotActionPending(false);
+    if (slotReadState) failSlotImageRead(message);
+    const statusEl = document.getElementById('status');
+    if (statusEl) {
+        statusEl.parentElement.style.display = 'block';
+        setStatus(message);
+    }
+    addLog(message, '', 'error');
+    updateButtonStatus();
+}
+
+async function startSlotSlide(randomMode = false) {
+    if (slotState.usedMask === 0) {
+        alert('请先存入至少一张图片，再启动轮播。');
+        addLog('❌ 轮播未启动：没有可用的图片槽。');
+        return false;
+    }
+    const input = document.getElementById('slotSlideMinutes');
+    const minutes = Math.max(1, Math.min(65535, parseInt(input.value, 10) || 1));
+    input.value = minutes;
+    setSlotActionPending(true);
+    const cmdData = new Uint8Array([minutes >> 8, minutes & 0xFF, randomMode ? 1 : 0]);
+    if (await write(EpdCmd.SET_SLIDE, cmdData)) {
+        addLog(`${randomMode ? '🎲 随机' : '🔄 顺序'}轮播已启动，间隔 ${minutes} 分钟。`);
+        return true;
+    }
+    setSlotActionPending(false);
+    return false;
+}
+
+// 🆕 随机轮播入口（HTML 已有按钮调用）
+async function startRandomSlotSlide() {
+    return startSlotSlide(true);
 }
 
 // ==================== 残影消除模式 ====================
@@ -578,6 +1620,7 @@ function JD79660JiaoCuoYuChuLi(rawData) {
 }
 
 // ==================== 发送图片（支持双协议）====================
+/*不支持槽位的最稳定版
 async function sendimg() {
     if (cropManager.isCropMode()) {
         alert("请先完成图片裁剪！发送已取消。");
@@ -627,36 +1670,330 @@ async function sendimg() {
     if (useCRC) addLog("使用CRC校验传输模式");
 
     if (ditherMode === 'sixColor') {
+        // 【正确流程】：E6 必须发送两次完全相同的原始4bit数据，中间夹一次刷新
+            
+            // 1. 获取当前画布的原始6色索引数据 (0-5)
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const sixColorPalette = epdRealColors.sixColor;
+            const indexArray = extractSixColorIndex(imageData, sixColorPalette);
+            
+            // 2. 映射索引：上位机索引 -> 固件期望索引
+            //   上位机: 黄0, 绿1, 蓝2, 红3, 黑4, 白5
+            //   固件:   黑0, 白1, 黄2, 红3, 蓝5, 绿6
+            const map = [2, 6, 5, 3, 0, 1];  // 下标: 0->2, 1->6, 2->5, 3->3, 4->0, 5->1
+            const mappedArray = new Uint8Array(indexArray.length);
+            for (let i = 0; i < indexArray.length; i++) {
+                mappedArray[i] = map[indexArray[i]];
+            }
+            
+            // 3. 打包为下位机需要的4bit格式（每像素4位，每字节2像素，值为0-5）
+            // 千万不要提前映射！把原始数据丢给下位机，由下位机的 e6_stage 状态机动态映射。
+            const rawData = packSixColorTo4bit(mappedArray, canvas.width, canvas.height);
+            
+            startTime = Date.now();
+            const statusEl = document.getElementById("status");
+            statusEl.parentElement.style.display = "block";
+            updateButtonStatus(true);
+            
+            await write(EpdCmd.INIT);
+            
+            // 3. 第一次传输原始数据 + 刷新 (下位机 e6_stage 为 0，内部使用 color_map 转换)
+            // 如果您之前把 CRC 传输用得很稳，用 writeImageCRC 最好
+            await transferFn(rawData, 'color');
+            await write(EpdCmd.REFRESH);
+            
+            addLog("⏳ E6 第一阶段刷新中（下位机正在执行第一次物理刷屏，需等待10秒）...");
+            // 4. 死等10秒！确保下位机硬件刷新完成，并且 e6_stage 已被翻转成 1
+            await sleep(10000); 
+            
+            // 5. 第二次传输完全相同的原始数据 + 刷新 (下位机 e6_stage 为 1，内部使用 color_map1 转换)
+            await transferFn(rawData, 'color');
+            await write(EpdCmd.REFRESH);
+            
+            updateButtonStatus();
+            const elapsed = (Date.now() - startTime) / 1000;
+            addLog(`✅ E6 六色屏双阶段传输完成！耗时: ${elapsed}s`);
+            setStatus(`✅ E6 传输完成！耗时: ${elapsed}s`);
+            setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
+            return;
+    } else if (ditherMode === 'fourColor') {
+        await transferFn(processedData, 'color');
+    } else if (ditherMode === 'threeColor') {
+        const half = Math.floor(processedData.length / 2);
+        const bwData = processedData.slice(0, half);
+        const redData = processedData.slice(half);
+        if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
+            await transferFn(convertUC8159(bwData, redData), 'bw');
+        } else {
+            await transferFn(bwData, 'bw');
+            await transferFn(redData, 'red');
+        }
+    } else if (ditherMode === 'blackWhiteColor') {
+        if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
+            const empty = new Uint8Array(processedData.length).fill(0xFF);
+            await transferFn(convertUC8159(processedData, empty), 'bw');
+        } else {
+            await transferFn(processedData, 'bw');
+        }
+    } else {
+        addLog("当前固件不支持此颜色模式。");
+        updateButtonStatus();
+        return;
+    }
+
+    await write(EpdCmd.REFRESH);
+    updateButtonStatus();
+
+    const elapsed = (Date.now() - startTime) / 1000;
+    addLog(`发送完成！耗时: ${elapsed}s`);
+    setStatus(`发送完成！耗时: ${elapsed}s`);
+    addLog("屏幕刷新完成前请不要操作。");
+    setTimeout(() => {
+        statusEl.parentElement.style.display = "none";
+    }, 5000);
+}*/
+//支持槽位版
+/*
+async function sendimg(options = {}) {
+    if (cropManager.isCropMode()) {
+        alert("请先完成图片裁剪！发送已取消。");
+        return;
+    }
+
+    if (appModeEnabled) {
+        await sendimgAppMode();
+        return;
+    }
+
+    // ---- Web 模式 ----
+    const hasSpecialContent = paintManager && (
+        (paintManager.scheduleData && paintManager.scheduleData.length > 0) ||
+        (paintManager.todoData && paintManager.todoData.length > 0) ||
+        paintManager.cardData ||
+        paintManager.wifiData
+    );
+    if (hasSpecialContent) {
+        addLog("特殊内容发送：重绘画布（禁用抖动/对比度，直接按渲染结果发送）");
+        paintManager.redrawAll();
+    } else {
+        if (typeof convertDithering === 'function') convertDithering();
+    }
+
+    // 获取画布图像数据（用于发送和缓存）
+    const canvasSizeVal = document.getElementById('canvasSize').value;
+    const ditherMode = document.getElementById('ditherMode').value;
+    const epdDriverSelect = document.getElementById('epddriver');
+    const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
+
+    if (selectedOption.getAttribute('data-size') !== canvasSizeVal && !confirm("警告：画布尺寸和驱动不匹配，是否继续？")) return;
+    if (selectedOption.getAttribute('data-color') !== ditherMode && !confirm("警告：颜色模式和驱动不匹配，是否继续？")) return;
+
+    startTime = Date.now();
+    const statusEl = document.getElementById("status");
+    statusEl.parentElement.style.display = "block";
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const processedData = processImageData(imageData, ditherMode);
+
+    // ---- 槽位支持：如果指定了目标槽位，先选择并缓存预览 ----
+    const targetSlot = Number.isInteger(options.slot) ? options.slot : null;
+    if (targetSlot != null) {
+        if (targetSlot < 0 || targetSlot >= slotState.count) {
+            addLog(`无效的槽位编号：${targetSlot + 1}，当前槽位总数 ${slotState.count}`);
+            return;
+        }
+        // 选择槽位
+        if (!await write(EpdCmd.SET_SLOT, new Uint8Array([0, targetSlot]))) {
+            addLog(`切换到槽位 ${targetSlot + 1} 失败。`);
+            return;
+        }
+        // 缓存预览（在发送前）
+        cacheCurrentSlotPreview(targetSlot, processedData, ditherMode);
+    }
+
+    updateButtonStatus(true);
+    await write(EpdCmd.INIT);
+
+    const useCRC = (appVersion >= 0x20) && typeof BleTransfer !== 'undefined';
+    const transferFn = useCRC ? writeImageCRC : writeImage;
+    if (useCRC) addLog("使用CRC校验传输模式");
+
+    // ---- 根据颜色模式发送 ----
+    if (ditherMode === 'sixColor') {
+        // 六色特殊处理（与原有代码相同）
+        const sixColorPalette = epdRealColors.sixColor;
+        const indexArray = extractSixColorIndex(imageData, sixColorPalette);
+        const map = [2, 6, 5, 3, 0, 1];
+        const mappedArray = new Uint8Array(indexArray.length);
+        for (let i = 0; i < indexArray.length; i++) {
+            mappedArray[i] = map[indexArray[i]];
+        }
+        const rawData = packSixColorTo4bit(mappedArray, canvas.width, canvas.height);
+        startTime = Date.now();
+        updateButtonStatus(true);
+        await write(EpdCmd.INIT);
+        await transferFn(rawData, 'color');
+        await write(EpdCmd.REFRESH);
+        addLog("⏳ E6 第一阶段刷新中...");
+        await sleep(10000);
+        await transferFn(rawData, 'color');
+        await write(EpdCmd.REFRESH);
+        updateButtonStatus();
+        const elapsed = (Date.now() - startTime) / 1000;
+        addLog(`✅ E6 六色屏双阶段传输完成！耗时: ${elapsed}s`);
+        setStatus(`✅ E6 传输完成！耗时: ${elapsed}s`);
+        setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
+        return;
+    } else if (ditherMode === 'fourColor') {
+        await transferFn(processedData, 'color');
+    } else if (ditherMode === 'threeColor') {
+        const half = Math.floor(processedData.length / 2);
+        const bwData = processedData.slice(0, half);
+        const redData = processedData.slice(half);
+        if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
+            await transferFn(convertUC8159(bwData, redData), 'bw');
+        } else {
+            await transferFn(bwData, 'bw');
+            await transferFn(redData, 'red');
+        }
+    } else if (ditherMode === 'blackWhiteColor') {
+        if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
+            const empty = new Uint8Array(processedData.length).fill(0xFF);
+            await transferFn(convertUC8159(processedData, empty), 'bw');
+        } else {
+            await transferFn(processedData, 'bw');
+        }
+    } else {
+        addLog("当前固件不支持此颜色模式。");
+        updateButtonStatus();
+        return;
+    }
+
+    // ⚠️ 找到这一段（在所有颜色模式发送完成后）
+    addLog('图片数据发送完成，等待屏幕刷新...');
+    setStatus('图片数据发送完成，正在刷新屏幕...');
+
+    // 🆕 启动超时等待
+    startImageRefreshWait();
+
+    // 发送刷新命令
+    if (!await write(EpdCmd.REFRESH)) {
+        cancelImageRefreshWait();
+        setStatus('❌ 刷新命令发送失败。');
+        imageTransferActive = false;
+        updateButtonStatus();
+        return;
+    }
+    await write(EpdCmd.REFRESH);
+    updateButtonStatus();
+
+    const elapsed = (Date.now() - startTime) / 1000;
+    addLog(`发送完成！耗时: ${elapsed}s`);
+    setStatus(`发送完成！耗时: ${elapsed}s`);
+    addLog("屏幕刷新完成前请不要操作。");
+    setTimeout(() => {
+        statusEl.parentElement.style.display = "none";
+    }, 5000);
+}*/
+async function sendimg(options = {}) {
+    if (cropManager.isCropMode()) {
+        alert("请先完成图片裁剪！发送已取消。");
+        return;
+    }
+
+    if (appModeEnabled) {
+        await sendimgAppMode();
+        return;
+    }
+
+    // ---- Web 模式 ----
+    const hasSpecialContent = paintManager && (
+        (paintManager.scheduleData && paintManager.scheduleData.length > 0) ||
+        (paintManager.todoData && paintManager.todoData.length > 0) ||
+        paintManager.cardData ||
+        paintManager.wifiData
+    );
+    if (hasSpecialContent) {
+        addLog("特殊内容发送：重绘画布（禁用抖动/对比度，直接按渲染结果发送）");
+        paintManager.redrawAll();
+    } else {
+        if (typeof convertDithering === 'function') convertDithering();
+    }
+
+    // 获取画布图像数据
+    const canvasSizeVal = document.getElementById('canvasSize').value;
+    const ditherMode = document.getElementById('ditherMode').value;
+    const epdDriverSelect = document.getElementById('epddriver');
+    const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
+
+    if (selectedOption.getAttribute('data-size') !== canvasSizeVal && !confirm("警告：画布尺寸和驱动不匹配，是否继续？")) return;
+    if (selectedOption.getAttribute('data-color') !== ditherMode && !confirm("警告：颜色模式和驱动不匹配，是否继续？")) return;
+
+    startTime = Date.now();
+    const statusEl = document.getElementById("status");
+    statusEl.parentElement.style.display = "block";
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const processedData = processImageData(imageData, ditherMode);
+
+    // ---- 槽位支持 ----
+    const targetSlot = Number.isInteger(options.slot) ? options.slot : null;
+    const noRefresh = options.noRefresh === true;   // 新增：是否禁止刷新
+
+    if (targetSlot != null) {
+        if (targetSlot < 0 || targetSlot >= slotState.count) {
+            addLog(`无效的槽位编号：${targetSlot + 1}，当前槽位总数 ${slotState.count}`);
+            return;
+        }
+        // 选择槽位
+        if (!await write(EpdCmd.SET_SLOT, new Uint8Array([0, targetSlot]))) {
+            addLog(`切换到槽位 ${targetSlot + 1} 失败。`);
+            return;
+        }
+        // 缓存预览（在发送前）
+        cacheCurrentSlotPreview(targetSlot, processedData, ditherMode);
+    }
+
+    updateButtonStatus(true);
+    await write(EpdCmd.INIT);
+
+    const useCRC = false;//(appVersion >= 0x20) && typeof BleTransfer !== 'undefined';
+    const transferFn = useCRC ? writeImageCRC : writeImage;
+    if (useCRC) addLog("使用CRC校验传输模式");
+
+    // ---- 根据颜色模式发送 ----
+    if (ditherMode === 'sixColor') {
         // 1. 获取画布原始六色索引 0黄,1绿,2蓝,3红,4黑,5白
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const sixColorPalette = epdRealColors.sixColor;
-        const indexArray = extractSixColorIndex(imageData);
-        
+        const indexArray = extractSixColorIndex(imageData, sixColorPalette);
+
         // 上位下标转硬件4bit码：0→2,1→6,2→5,3→3,4→0,5→1
         const hwMap = [2, 6, 5, 3, 0, 1];
         const mappedArray = new Uint8Array(indexArray.length);
         for (let i = 0; i < indexArray.length; i++) {
             mappedArray[i] = hwMap[indexArray[i]];
         }
-        // 打包4bit原始数据（传给固件第一层输入）
-        const rawData = packSixColorTo4bit(mappedArray, canvas.width, canvas.height);
-        
+
+        const firstData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, true);
+        const secondData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, false);
+
         startTime = Date.now();
         const statusEl = document.getElementById("status");
         statusEl.parentElement.style.display = "block";
         updateButtonStatus(true);
         await write(EpdCmd.INIT);
-    
-        // ========== 第一阶段刷新 color_map ==========
-        await transferFn(rawData, 'color');
+
+        // ========== 第一阶段刷新 color_map 清屏-显示-红黄绿 ==========
+        await transferFn(firstData, 'color');
         await write(EpdCmd.REFRESH);
         addLog("⏳ E6 第一阶段刷新( color_map )等待10秒...");
         await sleep(10000);
-    
-        // ========== 第二阶段刷新 color_map1 ==========
-        await transferFn(rawData, 'color');
+
+        // ========== 第二阶段刷新 color_map1 显示-蓝黑==========
+        await transferFn(secondData, 'blue');
         await write(EpdCmd.REFRESH);
-    
+
         updateButtonStatus();
         const elapsed = (Date.now() - startTime) / 1000;
         addLog(`✅ E6 双阶段传输完成！耗时: ${elapsed}s`);
@@ -688,6 +2025,29 @@ async function sendimg() {
         return;
     }
 
+    // ---- 刷新控制 ----
+    if (noRefresh) {
+        // 仅发送数据，不刷新
+        addLog(`✅ 图片数据已存入槽位 ${targetSlot !== null ? targetSlot + 1 : ''}，未刷新屏幕。`);
+        setStatus(`存入完成，未刷新屏幕。`);
+        imageTransferActive = false;
+        updateButtonStatus();
+        setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
+        return;
+    }
+
+    // ---- 正常刷新流程 ----
+    addLog('图片数据发送完成，等待屏幕刷新...');
+    setStatus('图片数据发送完成，正在刷新屏幕...');
+    startImageRefreshWait();
+
+    if (!await write(EpdCmd.REFRESH)) {
+        cancelImageRefreshWait();
+        setStatus('❌ 刷新命令发送失败。');
+        imageTransferActive = false;
+        updateButtonStatus();
+        return;
+    }
     await write(EpdCmd.REFRESH);
     updateButtonStatus();
 
@@ -862,8 +2222,27 @@ function updateButtonStatus(forceDisabled = false) {
     document.getElementById("sendimgbutton").disabled = disabled;
     document.getElementById("setDriverbutton").disabled = disabled;
     document.getElementById("syncholidaybutton").disabled = disabled;
+    
+    const hasMultiple = (slotState.usedMask & (slotState.usedMask - 1)) !== 0; // 至少2个有效槽位
+    const randomDisabled = status || !hasMultiple ? 'disabled' : null;
+    document.getElementById("randomSlotSlideButton").disabled = randomDisabled;
+    
     const testBtn = document.querySelector('button[onclick="syncAndShowCalendar()"]');
     if(testBtn) testBtn.disabled = disabled;
+    
+    // ---- 新增槽位按钮状态 ----
+    const slotDisabled = (forceDisabled || !connected || imageTransferActive || slotActionPending || slotReadState !== null) ? 'disabled' : null;
+    const refreshBtn = document.getElementById('refreshSlotsButton');
+    const eraseAllBtn = document.getElementById('eraseAllSlotsButton');
+    const startSlideBtn = document.getElementById('startSlotSlideButton');
+    const stopSlideBtn = document.getElementById('stopSlotSlideButton');
+    if (refreshBtn) refreshBtn.disabled = slotDisabled;
+    if (eraseAllBtn) eraseAllBtn.disabled = slotDisabled || slotState.usedMask === 0 ? 'disabled' : null;
+    if (startSlideBtn) startSlideBtn.disabled = slotDisabled;
+    if (stopSlideBtn) stopSlideBtn.disabled = slotDisabled;
+    
+    // 重新渲染槽位网格（以更新内部按钮状态）
+    renderSlotGrid(forceDisabled || imageTransferActive || slotActionPending || slotReadState !== null);
 }
 
 function disconnect() {
@@ -1019,6 +2398,7 @@ async function reConnect() {
     setTimeout(async () => { await connect(); }, 300);
 }
 
+/*旧版好用的
 async function connect() {
     if (!bleDevice || epdCharacteristic) return;
     try {
@@ -1125,6 +2505,8 @@ async function connect() {
             try { const versionData = await txCharacteristic.readValue(); appVersion = versionData.getUint8(0); addLog(`固件版本: 0x${appVersion.toString(16)}`); addLog(`APP版本: v${APP_VERSION} (${APP_BUILD_DATE})`); } catch(e){ appVersion=0x15; }
             if (typeof BleTransfer !== 'undefined') BleTransfer.init();
             await write(EpdCmd.INIT);
+            // 新增：自动读取槽位信息
+            await refreshSlots();
         } else {
             appVersion = 0x20;
             addLog("APP 模式：固件版本假定为 0x20");
@@ -1145,7 +2527,178 @@ async function connect() {
         return;
     }
 }
+*/
+async function connect() {
+    if (!bleDevice || epdCharacteristic) return;
+    try {
+        addLog("正在连接: " + bleDevice.name);
+        gattServer = await bleDevice.gatt.connect();
+        addLog("  找到 GATT Server");
 
+        // ---------- 1. 尝试 Web 协议 ----------
+        let webProtocolOk = false;
+        try {
+            epdService = await gattServer.getPrimaryService('62750001-d828-918d-fb46-b6c11c675aec');
+            addLog("  找到 EPD Service (Web 协议)");
+            epdCharacteristic = await epdService.getCharacteristic('62750002-d828-918d-fb46-b6c11c675aec');
+            addLog("  找到 RX Characteristic");
+            txCharacteristic = await epdService.getCharacteristic('62750003-d828-918d-fb46-b6c11c675aec');
+            addLog("  找到 TX Characteristic");
+
+            await epdCharacteristic.startNotifications();
+            epdCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
+                handleNotify(event.target.value, msgIndex++);
+            });
+            addLog("  通知已开启");
+            await sleep(50);
+            appModeEnabled = false;
+            addLog("📡 协议模式: 网页模式");
+            webProtocolOk = true;
+        } catch (e) {
+            addLog("Web 协议识别失败，尝试 APP 协议...");
+            // 如果 Web 协议失败，但可能部分变量已赋值，清理一下
+            epdCharacteristic = null;
+            txCharacteristic = null;
+            epdService = null;
+        }
+
+        // ---------- 2. 如果 Web 协议失败，尝试 APP 协议 ----------
+        if (!webProtocolOk) {
+            try {
+                epdService = await gattServer.getPrimaryService('0000ff01-0000-1000-8000-00805f9b34fb');
+                addLog("  找到 EPD Service (APP 协议)");
+                cmdCharacteristic = await epdService.getCharacteristic('0000ff03-0000-1000-8000-00805f9b34fb');
+                addLog("  找到 WriteCMD Characteristic (0000ff03)");
+                epdCharacteristic = await epdService.getCharacteristic('0000ff02-0000-1000-8000-00805f9b34fb');
+                addLog("  找到 WritePic Characteristic (0000ff02)");
+                txCharacteristic = await epdService.getCharacteristic('0000ff04-0000-1000-8000-00805f9b34fb');
+                addLog("  找到 Notify Characteristic (0000ff04)");
+
+                try {
+                    await txCharacteristic.startNotifications();
+                    txCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
+                        handleNotify(event.target.value, msgIndex++);
+                    });
+                    addLog("  通知已开启");
+                } catch(e2) {
+                    addLog("  通知开启失败（不影响写操作）: " + e2.message);
+                }
+
+                appModeEnabled = true;
+                addLog("📡 协议模式: APP 模式");
+
+                if (typeof AppProtocol !== 'undefined') {
+                    AppProtocol.setCharacteristics(cmdCharacteristic, epdCharacteristic);
+                    AppProtocol.setNotifyCharacteristic(txCharacteristic);
+                    AppProtocol.setLogCallback(addLog);
+
+                    // MTU 协商
+                    let actualMtu = 23;
+                    try {
+                        await gattServer.requestMTU(256);
+                        addLog("  已请求 MTU=256");
+                        await sleep(500);
+                        if (gattServer.mtu) {
+                            actualMtu = gattServer.mtu;
+                            addLog(`  协商实际 MTU (gattServer.mtu) = ${actualMtu}`);
+                        } else if (cmdCharacteristic.service.device.gatt && cmdCharacteristic.service.device.gatt.mtu) {
+                            actualMtu = cmdCharacteristic.service.device.gatt.mtu;
+                            addLog(`  协商实际 MTU (device.gatt.mtu) = ${actualMtu}`);
+                        } else {
+                            addLog(`  ⚠️ 无法获取实际 MTU，使用默认 23`);
+                        }
+                    } catch(mtuErr) {
+                        addLog(`  MTU 协商失败: ${mtuErr.message}，使用默认 23`);
+                    }
+                    AppProtocol.setMtuSize(actualMtu);
+                    addLog(`  ✅ APP模式数据包负载大小 = ${actualMtu - 3} 字节`);
+
+                    // 强制设置七色屏驱动
+                    const epdDriverSelect = document.getElementById('epddriver');
+                    let option = Array.from(epdDriverSelect.options).find(opt => opt.value === 'FF');
+                    if (!option) {
+                        option = document.createElement('option');
+                        option.value = 'FF';
+                        option.setAttribute('data-color', 'sevenColor');
+                        option.setAttribute('data-size', '7.3E6_800_480');
+                        option.text = '7.3寸 (七色, Spectra 6)';
+                        epdDriverSelect.appendChild(option);
+                    }
+                    epdDriverSelect.value = 'FF';
+                    const ditherModeSelect = document.getElementById('ditherMode');
+                    if (ditherModeSelect) ditherModeSelect.value = 'sevenColor';
+                    const canvasSizeSelect = document.getElementById('canvasSize');
+                    if (canvasSizeSelect) canvasSizeSelect.value = '7.3E6_800_480';
+                    updateCanvasSize();
+                    addLog("✅ APP 模式：已强制设置为七色 7.3 寸屏幕 (Spectra 6)");
+                    AppProtocol.setEpdType(0x06);
+                    const abSelect = document.getElementById('abSelect');
+                    AppProtocol.setEpdIndex(abSelect ? parseInt(abSelect.value) : 1);
+                    const compressCheck = document.getElementById('compressEnable');
+                    AppProtocol.setCompress(compressCheck ? compressCheck.checked : false);
+                    addLog("  AppProtocol 初始化完成");
+                } else {
+                    addLog("  警告：AppProtocol 未加载，APP 模式无法发送图片");
+                }
+            } catch (e2) {
+                // 两种协议都失败
+                throw new Error("无法识别设备协议，请确认设备固件是否支持");
+            }
+        }
+
+        // ---------- 3. 更新 UI 和后续初始化 ----------
+        updateUIBasedOnProtocol();
+
+        if (!appModeEnabled) {
+            // Web 协议：读取版本、初始化屏幕、自动读取槽位（但需容错）
+            try {
+                const versionData = await txCharacteristic.readValue();
+                appVersion = versionData.getUint8(0);
+                addLog(`固件版本: 0x${appVersion.toString(16)}`);
+                addLog(`APP版本: v${APP_VERSION} (${APP_BUILD_DATE})`);
+            } catch(e) {
+                appVersion = 0x15;
+                addLog("无法读取固件版本，假定为 0x15");
+            }
+
+            if (typeof BleTransfer !== 'undefined') BleTransfer.init();
+
+            await sleep(200);  // 增加这一行
+            // 初始化屏幕
+            await write(EpdCmd.INIT);
+
+            // ---- 自动读取槽位（容错处理，不影响主流程） ----
+            try {
+                await refreshSlots();
+            } catch (slotErr) {
+                addLog(`⚠️ 自动读取槽位失败（不影响使用）: ${slotErr.message}`);
+            }
+
+            // 版本过低警告
+            if (appVersion < 0x16) {
+                const oldURL = "https://tsl0922.github.io/EPD-nRF5/v1.5";
+                alert("!!!注意!!!\n当前固件版本过低，可能无法正常使用部分功能，建议升级到最新版本。");
+                if (confirm('是否访问旧版本上位机？')) location.href = oldURL;
+                setTimeout(()=> addLog(`如遇到问题，可访问旧版本上位机: ${oldURL}`), 500);
+            }
+        } else {
+            appVersion = 0x20;
+            addLog("APP 模式：固件版本假定为 0x20");
+        }
+
+        document.getElementById("connectbutton").innerHTML = '断开';
+        updateButtonStatus();
+        addLog("✅ 连接成功，可以发送指令或图片");
+
+    } catch (e) {
+        console.error(e);
+        if (e.message) addLog("connect: " + e.message);
+        disconnect();
+        return;
+    }
+}
+
+/*不支持槽位的最稳定版
 function handleNotify(value, idx) {
     const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
 
@@ -1170,6 +2723,7 @@ function handleNotify(value, idx) {
         epdpins.value = bytes2hex(data.slice(0, 7));
         if (data.length > 10) epdpins.value += bytes2hex(data.slice(10, 11));
         epddriver.value = bytes2hex(data.slice(7, 8));
+        a0_fix = 0;               // 配置上报时重置（安全兜底）
         updateDitcherOptions();
     } else {
         // 普通文本消息
@@ -1184,8 +2738,154 @@ function handleNotify(value, idx) {
             const t = parseInt(msg.substring(2)) + (new Date().getTimezoneOffset() * 60);
             addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
             addLog(`本地时间: ${new Date().toLocaleString()}`);
+        }// 新增：处理 a0_fix 消息
+        else if (msg.startsWith('a0_fix=')) {
+            const val = parseInt(msg.substring(7), 10);
+            a0_fix = (val === 1) ? 1 : 0;   // 根据设备发送的值设置
+            addLog(`a0_fix 设置为: ${a0_fix}`);
         }
     }
+}*/
+
+function handleNotify(value, idx) {
+    const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+
+    if (appModeEnabled) {
+        // APP 模式不处理 Web 消息
+        return;
+    }
+
+    // CRC 传输
+    if (data.length >= 1 && (data[0] === 0xA0 || data[0] === 0xA1)) {
+        if (typeof BleTransfer !== 'undefined') {
+            BleTransfer.handleNotification(value);
+        }
+        return;
+    }
+
+    // 配置上报
+    if (idx === 0) {
+        addLog(`收到配置：${bytes2hex(data)}`);
+        const epdpins = document.getElementById("epdpins");
+        const epddriver = document.getElementById("epddriver");
+        epdpins.value = bytes2hex(data.slice(0, 7));
+        if (data.length > 10) epdpins.value += bytes2hex(data.slice(10, 11));
+        epddriver.value = bytes2hex(data.slice(7, 8));
+        deviceDriverValue = bytes2hex(data.slice(7, 8));   // 新增：保存驱动值
+        a0_fix = 0;
+        updateDitcherOptions();
+        return;
+    }
+
+    // 非文本数据 → 尝试作为槽位数据块
+    // 3️⃣ 判断是否为可打印文本（允许换行符）
+    const isText = data.every(byte => 
+        (byte >= 0x20 && byte <= 0x7E) || byte === 0x0A || byte === 0x0D
+    );
+    if (!isText) {
+        // --- 新增：优先处理槽位数据块接收 ---
+        if (slotReadState && slotReadState.expectedChunk) {
+            receiveSlotChunk(data);
+        }
+        addLog(`收到二进制数据：${bytes2hex(data)}`, '⇓');
+        return;
+    }
+
+    // 文本消息
+    if (!textDecoder) textDecoder = new TextDecoder();
+    const msg = textDecoder.decode(data);
+    addLog(msg, '⇓');
+    
+    // ---- 自动识别驱动作者（仅首次） ----
+    if (!driverAuthorDetected) {
+        let presetId = null;
+        if (msg.includes('DONGSHAN')) {
+            presetId = 'dongshan';
+        } else if (msg.includes('GUOWANGYANYU')) {
+            presetId = 'GuoWangYanYu';
+        } else if (msg.includes('REG') || msg.includes('REGISTERED')) {
+            presetId = 'tsl0922';
+        }
+        if (presetId) {
+            applyDriverPresetAll(presetId);
+            driverAuthorDetected = true;
+            addLog(`✅ 自动识别驱动作者: ${DRIVER_PRESETS.find(p => p.id === presetId).name} 设备ID:${deviceDriverValue}`);
+        }
+    }
+
+    // 1. 应用槽位信息
+    if (applySlotsMessage(msg)) {
+        addLog('图片槽位状态已更新。');
+        return;
+    }
+
+    // 2. 开始读取槽位图片
+    if (beginSlotImageRead(msg)) {
+        addLog('开始接收槽位图片。');
+        return;
+    }
+
+    // 3. 槽位数据块开始
+    if (beginSlotChunk(msg)) {
+        return;
+    }
+
+    // 🆕 4. 屏幕刷新完成通知
+    if (msg === 'ready=1') {
+        completeImageRefresh();
+        return;
+    }
+
+    // 🆕 5. 显示错误处理
+    if (msg.startsWith('display_error=')) {
+        const errorCode = msg.substring('display_error='.length);
+        handleDisplayError(errorCode);
+        return;
+    }
+
+    // 🆕 6. 槽位错误处理
+    if (msg.startsWith('slot_error=')) {
+        const errorMessage = `槽位操作失败：${msg.substring('slot_error='.length)}`;
+        if (slotReadState) {
+            failSlotImageRead(errorMessage);
+        } else {
+            const status = document.getElementById('slotReadStatus');
+            if (status) {
+                status.hidden = false;
+                status.textContent = errorMessage;
+            }
+            addLog(errorMessage);
+            if (slotActionPending) setSlotActionPending(false);
+        }
+        return;
+    }
+
+    if (msg.startsWith('mtu=') && msg.length > 4) {
+        const mtuParts = msg.substring(4).trim().split(/\s+/);
+        const mtuSize = parseInt(mtuParts[0], 10);
+        rleSupport = mtuParts.includes('rle=1');
+        const mtuInput = document.getElementById('mtusize');
+        if (mtuInput) mtuInput.value = mtuSize;
+        addLog(`MTU 已更新为: ${mtuSize}`);
+        if (rleSupport) addLog('设备已启用 RLE 压缩传输。');
+        return;
+    }
+
+    if (msg.startsWith('t=') && msg.length > 2) {
+        const t = parseInt(msg.substring(2)) + (new Date().getTimezoneOffset() * 60);
+        addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
+        addLog(`本地时间: ${new Date().toLocaleString()}`);
+        return;
+    }
+
+    if (msg.startsWith('a0_fix=')) {
+        const val = parseInt(msg.substring(7), 10);
+        a0_fix = (val === 1) ? 1 : 0;
+        addLog(`a0_fix 设置为: ${a0_fix}`);
+        return;
+    }
+
+    // 其他消息不做特殊处理
 }
 
 // ==================== 日志和状态 ====================
@@ -1268,7 +2968,32 @@ function updateCanvasSize() {
 
 function updateDitcherOptions() {
     const select = document.getElementById('epddriver');
+    // 如果没有选择框或没有选项，直接返回
+    if (!select || select.options.length === 0) return;
+
+    // 确保 selectedIndex 有效
+    let idx = select.selectedIndex;
+    if (idx < 0 || idx >= select.options.length) {
+        // 尝试根据 select.value 匹配
+        const val = select.value;
+        if (val) {
+            for (let i = 0; i < select.options.length; i++) {
+                if (select.options[i].value === val) {
+                    select.selectedIndex = i;
+                    break;
+                }
+            }
+        }
+        // 如果还是无效，强制选中第一个
+        if (select.selectedIndex < 0 || select.selectedIndex >= select.options.length) {
+            select.selectedIndex = 0;
+        }
+    }
+
     const opt = select.options[select.selectedIndex];
+    // 极端情况下 opt 仍可能为 undefined，再防护一次
+    if (!opt) return;
+
     const color = opt.getAttribute('data-color');
     const size = opt.getAttribute('data-size');
     if (color) document.getElementById('ditherMode').value = color;
@@ -2097,8 +3822,10 @@ const DRIVER_PRESETS = [
                     <option value="03" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
                     <option value="04" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
                     <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
+                    <option value="24" data-color="fourColor" data-size="4.37_512_368">4.37寸 (四色, JD79665-A1)</option>
                     <option value="1e" data-color="blackWhiteColor" data-size="5.83_600_448">5.83寸 (黑白, JD79583)</option>
                     <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
+                    <option value="25" data-color="fourColor" data-size="7.3E6_800_480">7.3寸 (四色, JD79665-A1)</option>
                     <option value="FF" data-color="sevenColor" data-size="7.3E6_800_480">7.3寸 (七色, Spectra 6)</option>
                     <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, SES7.4_GU140)</option>
                     <option value="06" data-color="blackWhiteColor" data-size="7.5_800_480">7.5寸 (黑白, UC8179)</option>
@@ -2108,20 +3835,49 @@ const DRIVER_PRESETS = [
                     <option value="09" data-color="threeColor" data-size="7.5_640_384">7.5寸低分 (三色, UC8159)</option>
                     <option value="0a" data-color="blackWhiteColor" data-size="7.5_880_528">7.5寸HD (黑白, SSD1677)</option>
                     <option value="0b" data-color="threeColor" data-size="7.5_880_528">7.5寸HD (三色, SSD1677)</option>
+                    <option value="26" data-color="fourColor" data-size="9.7_960_680">9.7寸 (四色, CSOT970)</option>
         `
     },
+    {
+        id: "GuoWangYanYu",
+        name: "過往煙雨",
+        optionsHtml: `
+						<option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
+						<option value="03" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, UC8176)</option>
+						<option value="04" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
+						<option value="02" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
+						<option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
+						<option value="0d" data-color="fourColor" data-size="3.7_416_240">3.7BWRY (四色, GDEM037F51)</option>
+						<option value="0e" data-color="threeColor" data-size="3.7_416_240">3.7BWR (三色, GDEY037Z03)</option>
+						<option value="0f" data-color="threeColor" data-size="3.7_416_240">3.7BWR (三色, YS4370JS0C3)</option>
+						<option value="12" data-color="threeColor" data-size="3.7_416_240">3.7BWR(三色，LG 3.7寸）</option>
+						<option value="10" data-color="fourColor" data-size="3.98_768_552">3.98寸（四色，SE0398NZ07A0）</option>
+						<option value="11" data-color="fourColor" data-size="3.98_768_552">3.98寸（四色，SE0398NZ07A1）</option>
+						<option value="13" data-color="fourColor" data-size="3.98_768_552" selected>3.98寸（四色，SE0398NZ07-New-A1）</option>
+						<option value="14" data-color="fourColor" data-size="3.87_800_552">3.87寸（四色，KEGM038701E01-J665）</option>
+						<option value="15" data-color="fourColor" data-size="9.7_960_680">9.7寸（四色，GDEY133F91）</option>
+						<option value="06" data-color="blackWhiteColor" data-size="7.5_800_480">7.5寸 (黑白, UC8179)</option>
+						<option value="07" data-color="threeColor" data-size="7.5_800_480">7.5寸 (三色, UC8179)</option>
+						<option value="0c" data-color="fourColor" data-size="7.5_800_480">7.5寸 (四色, JD79668)</option>
+						<option value="08" data-color="blackWhiteColor" data-size="7.5_640_384">7.5寸低分 (黑白, UC8159)</option>
+						<option value="09" data-color="threeColor" data-size="7.5_640_384">7.5寸低分 (三色, UC8159)</option>
+						<option value="0a" data-color="blackWhiteColor" data-size="7.5_880_528">7.5寸HD (黑白, SSD1677)</option>
+						<option value="0b" data-color="threeColor" data-size="7.5_880_528">7.5寸HD (三色, SSD1677)</option>
+        `
+    }, 
     {
         id: "tsl0922",
         name: "TSL0922驱动",
         // 选项HTML（与原 QuDong_Tsl0922 完全一致）
         optionsHtml: `
+                    <!-- ====== 大屏 (ws) ====== -->
                     <option value="13" data-color="fourColor" data-size="3.98_768_552">3.98寸A0 (四色, JD79665)</option>
                     <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸A1 (四色, JD79665)</option>
                     <option value="01" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, UC8176)</option>
-                    <option value="03" data-color="threeColor" data-size="4.2_400_300"  selected>4.2寸 (三色, UC8176)</option>
+                    <option value="03" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, UC8176)</option>
                     <option value="04" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1619)</option>
                     <option value="02" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1619)</option>
-                    <option value="17" data-color="threeColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1683)</option>
+                    <option value="17" data-color="blackWhiteColor" data-size="4.2_400_300">4.2寸 (黑白, SSD1683)</option>
                     <option value="16" data-color="threeColor" data-size="4.2_400_300">4.2寸 (三色, SSD1683)</option>
                     <option value="05" data-color="fourColor" data-size="4.2_400_300">4.2寸 (四色, JD79668)</option>
                     <option value="28" data-color="blackWhiteColor" data-size="5.81_720_256">5.81寸 (黑白, 龙亭)</option>
@@ -2140,10 +3896,44 @@ const DRIVER_PRESETS = [
                     <option value="09" data-color="threeColor" data-size="7.5_640_384">7.5寸低分 (三色, UC8159)</option>
                     <option value="0a" data-color="blackWhiteColor" data-size="7.5_880_528">7.5寸HD (黑白, SSD1677)</option>
                     <option value="0b" data-color="threeColor" data-size="7.5_880_528">7.5寸HD (三色, SSD1677)</option>
+                    <option value="1a" data-color="fourColor" data-size="9.7_960_672">9.7寸 (四色, SSD2677)</option>
+                    <option value="1b" data-color="fourColor" data-size="9.7_960_672">9.7寸 (四色, SSD2677, LUT)</option>
                     <option value="11" data-color="threeColor" data-size="10.2_960_640">10.2寸 (三色, SSD1677)</option>
                     <option value="12" data-color="blackWhiteColor" data-size="10.2_960_640">10.2寸 (黑白, SSD1677)</option>
                     <option value="10" data-color="fourColor" data-size="10.2_960_640">10.2寸 (四色, SSD2677)</option>
+                    <option value="1c" data-color="fourColor" data-size="10.2_960_640">10.2寸 (四色, SSD2677, LUT)</option>
                     <option value="15" data-color="sixColor" data-size="7.3E6_800_480">7.3寸 (六色, Spectra 6)</option>
+                    
+                    <!-- ====== 小屏 (ps) ====== -->
+                    <option value="33" data-color="blackWhiteColor" data-size="2.13_250_122">2.13寸 (黑白, SSD1675)</option>
+                    <option value="32" data-color="threeColor" data-size="2.13_250_122">2.13寸 (三色, SSD1675)</option>
+                    <option value="35" data-color="blackWhiteColor" data-size="2.13_212_104">2.13寸低分 (黑白, SSD1675)</option>
+                    <option value="34" data-color="threeColor" data-size="2.13_212_104">2.13寸低分 (三色, SSD1675)</option>
+                    <option value="3b" data-color="blackWhiteColor" data-size="2.13_250_122">2.13寸 (黑白, SSD1680)</option>
+                    <option value="3a" data-color="threeColor" data-size="2.13_250_122">2.13寸 (三色, SSD1680)</option>
+                    <option value="4e" data-color="threeColor" data-size="2.13_250_122">2.13寸 (三色, SSD1680, ZK)</option>
+                    <option value="48" data-color="blackWhiteColor" data-size="2.13_212_104">2.13寸低分 (黑白, SSD1680)</option>
+                    <option value="47" data-color="threeColor" data-size="2.13_212_104">2.13寸低分 (三色, SSD1680)</option>
+                    <option value="4d" data-color="blackWhiteColor" data-size="2.13_250_122">2.13寸 (黑白, UC8151)</option>
+                    <option value="37" data-color="blackWhiteColor" data-size="2.13_250_122">2.13寸 (黑白, UC8151)</option>
+                    <option value="36" data-color="threeColor" data-size="2.13_250_122">2.13寸 (三色, UC8151)</option>
+                    <option value="39" data-color="blackWhiteColor" data-size="2.13_212_104">2.13寸低分 (黑白, UC8151)</option>
+                    <option value="38" data-color="threeColor" data-size="2.13_212_104">2.13寸低分 (三色, UC8151)</option>
+                    <option value="4c" data-color="blackWhiteColor" data-size="2.13_250_122">2.13寸 (黑白, JD79651)</option>
+                    <option value="4b" data-color="threeColor" data-size="2.13_250_122">2.13寸 (三色, JD79651)</option>
+                    <option value="4a" data-color="blackWhiteColor" data-size="2.66_296_152">2.6寸 (黑白, SSD1675)</option>
+                    <option value="49" data-color="threeColor" data-size="2.66_296_152">2.6寸 (三色, SSD1675)</option>
+                    <option value="3d" data-color="blackWhiteColor" data-size="2.66_296_152">2.6寸 (黑白, SSD1680)</option>
+                    <option value="3c" data-color="threeColor" data-size="2.66_296_152">2.6寸 (三色, SSD1680)</option>
+                    <option value="3f" data-color="blackWhiteColor" data-size="2.66_296_152">2.6寸 (黑白, UC8151)</option>
+                    <option value="3e" data-color="threeColor" data-size="2.66_296_152">2.6寸 (三色, UC8151)</option>
+                    <option value="45" data-color="blackWhiteColor" data-size="2.9_296_128">2.9寸 (黑白, SSD1675)</option>
+                    <option value="44" data-color="threeColor" data-size="2.9_296_128">2.9寸 (三色, SSD1675)</option>
+                    <option value="41" data-color="blackWhiteColor" data-size="2.9_296_128">2.9寸 (黑白, SSD1680)</option>
+                    <option value="40" data-color="threeColor" data-size="2.9_296_128">2.9寸 (三色, SSD1680)</option>
+                    <option value="43" data-color="blackWhiteColor" data-size="2.9_296_128">2.9寸 (黑白, UC8151)</option>
+                    <option value="42" data-color="threeColor" data-size="2.9_296_128">2.9寸 (三色, UC8151)</option>
+                    <option value="46" data-color="blackWhiteColor" data-size="2.9_296_128">2.9寸 (黑白, SSD1608)</option>
         `
     }, 
     // 👇 后续如需添加其他驱动预设，只需在此继续增加对象即可
@@ -2190,6 +3980,39 @@ function applyDriverPreset(presetId) {
     epddriver.dispatchEvent(new Event('change'));
 }
 
+function applyDriverPresetAll(presetId) {
+    const container = document.getElementById("driverPreset");
+    if (!container) return;
+    const preset = DRIVER_PRESETS.find(p => p.id === presetId);
+    if (!preset) return;
+    const epddriver = document.getElementById("epddriver");
+    if (!epddriver) return;
+    container.value = presetId;
+    // 替换选项
+    epddriver.innerHTML = preset.optionsHtml;
+
+    // 如果已保存设备驱动值，尝试选中该值
+    if (deviceDriverValue) {
+        let found = false;
+        for (let i = 0; i < epddriver.options.length; i++) {
+            if (epddriver.options[i].value === deviceDriverValue) {
+                epddriver.value = deviceDriverValue;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            // 如果设备驱动值不在预设中，保留预设的默认选中（即不做额外操作）
+            // 但需要确保有一个选项被选中（可能预设中已有 selected）
+        }
+    }
+    // 调用 updateDitcherOptions（现在有容错）
+    if (typeof updateDitcherOptions === 'function') {
+        updateDitcherOptions();
+    }
+    epddriver.dispatchEvent(new Event('change'));
+}
+
 // 初始化驱动预设下拉选择器
 function initDriverPresetSelector() {
     const container = document.getElementById("driverPreset");
@@ -2202,13 +4025,13 @@ function initDriverPresetSelector() {
         container.appendChild(option);
     });
     // 默认选中“东山驱动”
-    container.value = "dongshan";
+    container.value = 'dongshan';
     // 监听变化
     container.addEventListener("change", (e) => {
         applyDriverPreset(e.target.value);
     });
     // 立即应用默认预设
-    applyDriverPreset("dongshan");
+    applyDriverPreset('dongshan');
 }
 /*
 // 页面加载完成后初始化

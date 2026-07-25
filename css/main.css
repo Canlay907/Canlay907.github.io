@@ -17,3 +17,272 @@ button::before, button::after,
 .tool-button::before, .tool-button::after {
     content: none !important;
 }
+/* ===== SLOT 相关样式（完整摘录） ===== */
+
+.slot-toolbar,
+.slot-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.slot-toolbar > div,
+.slot-preview-header > div:first-child {
+    display: grid;
+    gap: 3px;
+}
+
+.slot-toolbar .slot-toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.slot-hint {
+    display: block;
+    color: var(--body-muted);
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.slot-slide-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.slot-slide-controls input {
+    width: 84px;
+}
+
+.slot-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.slot-item {
+    position: relative;
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--ui-radius-inner-size);
+    background: var(--surface-pearl);
+}
+
+.slot-item.used {
+    border-color: rgba(0, 102, 204, 0.28);
+    background: rgba(0, 102, 204, 0.045);
+}
+
+.slot-item.selected {
+    border-color: #248a3d;
+    box-shadow: inset 3px 0 0 #248a3d;
+}
+
+.slot-label,
+.slot-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.slot-state {
+    color: var(--body-muted);
+    font-size: 13px;
+}
+
+.slot-item.used .slot-state {
+    color: var(--primary-color);
+}
+
+.slot-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    justify-content: flex-start;
+}
+
+.slot-actions > button,
+.slot-actions > .slot-read-control {
+    width: 100%;
+    min-width: 0;
+}
+
+.slot-actions button {
+    padding-right: 10px;
+    padding-left: 10px;
+}
+
+.slot-read-control {
+    min-width: 0;
+}
+
+.slot-read-control > button {
+    width: 100%;
+}
+
+.slot-read-control.cached > button:not(:disabled) {
+    color: #248a3d;
+    border-color: #248a3d;
+}
+
+.slot-hover-preview {
+    position: absolute;
+    z-index: 30;
+    right: 14px;
+    bottom: 58px;
+    left: 14px;
+    display: none;
+    padding: 10px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--ui-radius-inner-size);
+    background: var(--surface-pearl);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
+    color: var(--ink);
+    pointer-events: none;
+}
+
+.slot-read-control:hover .slot-hover-preview,
+.slot-read-control:focus-within .slot-hover-preview {
+    display: grid;
+    gap: 8px;
+}
+
+.slot-hover-preview img {
+    display: block;
+    width: 100%;
+    max-height: 240px;
+    object-fit: contain;
+    border: 1px solid rgba(0, 0, 0, 0.16);
+    background: #fff;
+    image-rendering: pixelated;
+}
+
+.slot-hover-preview span,
+.slot-hover-preview.empty {
+    color: var(--body-muted);
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.slot-delete:not(:disabled) {
+    color: #b42318;
+    border-color: #b42318;
+}
+
+.slot-delete:not(:disabled):hover {
+    color: #fff;
+    background: #b42318;
+}
+
+.slot-read-status {
+    margin-top: 14px;
+    padding: 11px 13px;
+    border-left: 3px solid var(--primary-color);
+    background: var(--surface-pearl);
+    color: var(--body-muted);
+    font-size: 14px;
+}
+
+.slot-read-status[hidden],
+.slot-preview-area[hidden] {
+    display: none;
+}
+
+.slot-preview-area {
+    display: grid;
+    gap: 14px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--hairline);
+}
+
+.slot-preview-area canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+    border: 1px solid rgba(0, 0, 0, 0.18);
+    background: #fff;
+    image-rendering: pixelated;
+}
+
+/* ===== 暗黑模式下的 SLOT 样式覆盖 ===== */
+
+body.dark-mode .slot-hover-preview {
+    border-color: #424245;
+    background: #1d1d1f;
+    color: #f5f5f7;
+}
+
+body.dark-mode .slot-hover-preview span,
+body.dark-mode .slot-hover-preview.empty {
+    color: var(--body-muted-dark);
+}
+
+body.dark-mode .slot-item {
+    border-color: rgba(129, 161, 193, 0.22);
+    background: rgba(17, 24, 39, 0.78);
+}
+
+body.dark-mode .slot-item.used {
+    border-color: rgba(124, 196, 255, 0.38);
+    background: rgba(18, 54, 82, 0.48);
+}
+
+body.dark-mode .slot-state {
+    color: #a9b4c2;
+}
+
+body.dark-mode .slot-item.used .slot-state {
+    color: #7cc4ff;
+}
+
+body.dark-mode .slot-read-status {
+    border-left-color: #7cc4ff;
+    background: rgba(17, 24, 39, 0.78);
+    color: #a9b4c2;
+}
+
+/* ===== 响应式（移动端）下的 SLOT 样式调整 ===== */
+
+@media (max-width: 768px) {
+    .slot-toolbar,
+    .slot-preview-header {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .slot-toolbar .slot-toolbar-actions,
+    .slot-preview-header .flex-group {
+        width: 100%;
+    }
+
+    .slot-toolbar .slot-toolbar-actions button {
+        flex: 1 1 0;
+    }
+
+    .slot-preview-header .flex-group button {
+        flex: 1 1 0;
+    }
+
+    .slot-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ===== 自定义背景下的 SLOT 样式（未直接以 .slot 开头，但涉及 slot 元素） ===== */
+/* 注：以下规则虽未直接使用 .slot 选择器，但应用于包含 slot 组件的父容器，一并摘录以保证完整性 */
+
+body.custom-background .slot-item,
+body.custom-background .slot-read-status {
+    border-color: rgba(124, 196, 255, var(--ui-blue-border-soft-opacity));
+    background: rgba(17, 24, 39, var(--ui-footer-opacity));
+}
