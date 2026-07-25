@@ -19,6 +19,7 @@ const sevenColorPalette = [
 ];
 // 标准六色调色板（用于算法内部颜色匹配）
 // 固定的六色调色板
+/*
 const rgbPalette = [
   { name: "黄色", r: 255, g: 255, b: 0, value: 0xe2 },
   { name: "绿色", r: 41, g: 204, b: 20, value: 0x96 },
@@ -26,6 +27,14 @@ const rgbPalette = [
   { name: "红色", r: 255, g: 0, b: 0, value: 0x4c },
   { name: "黑色", r: 0, g: 0, b: 0, value: 0x00 },
   { name: "白色", r: 255, g: 255, b: 255, value: 0xff }
+];*/
+const rgbPalette = [
+  { name: "黄色", r: 255, g: 255, b: 0, value: 0x02 },
+  { name: "绿色", r: 41, g: 204, b: 20, value: 0x06 },
+  { name: "蓝色", r: 0, g: 0, b: 255, value: 0x05 },
+  { name: "红色", r: 255, g: 0, b: 0, value: 0x03 },
+  { name: "黑色", r: 0, g: 0, b: 0, value: 0x00 },
+  { name: "白色", r: 255, g: 255, b: 255, value: 0x01 }
 ];
 
 // 四色调色板

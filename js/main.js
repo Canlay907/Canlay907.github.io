@@ -83,6 +83,7 @@ const canvasSizes = [
     { name: '7.5_640_384', width: 640, height: 384 },
     { name: '7.5_800_480', width: 800, height: 480 },
     { name: '7.5_880_528', width: 880, height: 528 },
+    { name: '9.7_960_672', width: 960, height: 672 },//9.7寸Tsl
     { name: '9.7_960_680', width: 960, height: 680 },//9.7寸四色
     { name: '10.2_960_640', width: 960, height: 640 },
     { name: '10.85_1360_480', width: 1360, height: 480 },
@@ -704,29 +705,7 @@ async function syncTimeLegacy() {
     if (!confirm('确认切换到老款时钟模式？\n\n⚠️ 警告：时钟模式会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 此模式仅适用于UC8179 7.5寸屏幕\n• 费电')) return;
     await sendTimeCommand(3, '老款时钟模式');
 }
-/*
-async function syncTime(mode) {
-    if (mode === 2 && !confirm("提醒：时钟模式目前使用全刷实现，此功能目前多用于修复老化屏残影问题，不建议长期开启，是否继续？")) return;
-    if (mode === 1) {
-        await syncHolidayData();
-        await sleep(200);
-    }
-    const timestamp = Math.floor(Date.now() / 1000);
-    const data = new Uint8Array([
-        (timestamp >> 24) & 0xFF,
-        (timestamp >> 16) & 0xFF,
-        (timestamp >> 8) & 0xFF,
-        timestamp & 0xFF,
-        -(new Date().getTimezoneOffset() / 60),
-        mode
-    ]);
-    if (await write(EpdCmd.SET_TIME, data)) {
-        addLog("时间已同步！");
-        addLog("屏幕刷新完成前请不要操作。");
-    }
-    await sendTimeCommand(mode, mode === 1 ? '日历模式' : '时钟模式');
-}
-*/
+
 async function syncTime(mode) {
     if (mode === 2 && !confirm("提醒：时钟模式目前使用全刷实现，此功能目前多用于修复老化屏残影问题，不建议长期开启，是否继续？")) return;
     if (mode === 1) {
@@ -972,19 +951,6 @@ function renderSlotGrid(forceDisabled = imageTransferActive || slotActionPending
     hint.textContent = '“存入”会同时刷新屏幕并保存当前画布';
 }
 
-/*
-async function saveImageToSlot(slot) {
-    if (imageTransferActive || slotActionPending) return;
-    const imageFile = document.getElementById('imageFile');
-    if (!imageFile || imageFile.files.length === 0) {
-        alert('请先选择图片，再存入图片槽。');
-        addLog(`槽位 ${slot + 1} 未存入：尚未选择图片。`);
-        return;
-    }
-    const used = (slotState.usedMask & (1 << slot)) !== 0;
-    if (used && !confirm(`槽位 ${slot + 1} 已有图片，确认覆盖？`)) return;
-    await sendimg({ slot });
-}*/
 async function saveImageToSlot(slot) {
     if (imageTransferActive || slotActionPending) return;
     const imageFile = document.getElementById('imageFile');
@@ -1039,18 +1005,6 @@ async function displayImageSlot(slot) {
         setSlotActionPending(false);
     }
 }
-
-/*
-async function startSlotSlide(randomMode = false) {
-    const input = document.getElementById('slotSlideMinutes');
-    const minutes = Math.max(1, Math.min(65535, parseInt(input.value, 10) || 1));
-    input.value = minutes;
-    if (await write(EpdCmd.SET_SLIDE, new Uint8Array([minutes >> 8, minutes & 0xFF, randomMode ? 1 : 0]))) {
-        addLog(`${randomMode ? '随机' : '顺序'}轮播已启动...`);
-        return true;
-    }
-}
-*/
 
 async function stopSlotSlide() {
     if (await write(EpdCmd.SET_SLIDE, new Uint8Array([0, 0]))) {
@@ -1619,282 +1573,7 @@ function JD79660JiaoCuoYuChuLi(rawData) {
     return interleaveBuf;
 }
 
-// ==================== 发送图片（支持双协议）====================
-/*不支持槽位的最稳定版
-async function sendimg() {
-    if (cropManager.isCropMode()) {
-        alert("请先完成图片裁剪！发送已取消。");
-        return;
-    }
-
-    const hasSpecialContent = paintManager && (
-        (paintManager.scheduleData && paintManager.scheduleData.length > 0) ||
-        (paintManager.todoData && paintManager.todoData.length > 0) ||
-        paintManager.cardData ||
-        paintManager.wifiData
-    );
-
-    if (appModeEnabled) {
-        await sendimgAppMode();
-        return;
-    }
-
-    // ========== 原始网页版发送逻辑 ==========
-    if (hasSpecialContent) {
-        addLog("特殊内容发送：重绘画布（禁用抖动/对比度，直接按渲染结果发送）");
-        paintManager.redrawAll();
-    } else {
-        if (typeof convertDithering === 'function') convertDithering();
-    }
-
-    const canvasSizeVal = document.getElementById('canvasSize').value;
-    const ditherMode = document.getElementById('ditherMode').value;
-    const epdDriverSelect = document.getElementById('epddriver');
-    const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
-
-    if (selectedOption.getAttribute('data-size') !== canvasSizeVal && !confirm("警告：画布尺寸和驱动不匹配，是否继续？")) return;
-    if (selectedOption.getAttribute('data-color') !== ditherMode && !confirm("警告：颜色模式和驱动不匹配，是否继续？")) return;
-
-    startTime = Date.now();
-    const statusEl = document.getElementById("status");
-    statusEl.parentElement.style.display = "block";
-
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const processedData = processImageData(imageData, ditherMode);
-
-    updateButtonStatus(true);
-    await write(EpdCmd.INIT);
-
-    const useCRC = (appVersion >= 0x20) && typeof BleTransfer !== 'undefined';
-    const transferFn = useCRC ? writeImageCRC : writeImage;
-    if (useCRC) addLog("使用CRC校验传输模式");
-
-    if (ditherMode === 'sixColor') {
-        // 【正确流程】：E6 必须发送两次完全相同的原始4bit数据，中间夹一次刷新
-            
-            // 1. 获取当前画布的原始6色索引数据 (0-5)
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const sixColorPalette = epdRealColors.sixColor;
-            const indexArray = extractSixColorIndex(imageData, sixColorPalette);
-            
-            // 2. 映射索引：上位机索引 -> 固件期望索引
-            //   上位机: 黄0, 绿1, 蓝2, 红3, 黑4, 白5
-            //   固件:   黑0, 白1, 黄2, 红3, 蓝5, 绿6
-            const map = [2, 6, 5, 3, 0, 1];  // 下标: 0->2, 1->6, 2->5, 3->3, 4->0, 5->1
-            const mappedArray = new Uint8Array(indexArray.length);
-            for (let i = 0; i < indexArray.length; i++) {
-                mappedArray[i] = map[indexArray[i]];
-            }
-            
-            // 3. 打包为下位机需要的4bit格式（每像素4位，每字节2像素，值为0-5）
-            // 千万不要提前映射！把原始数据丢给下位机，由下位机的 e6_stage 状态机动态映射。
-            const rawData = packSixColorTo4bit(mappedArray, canvas.width, canvas.height);
-            
-            startTime = Date.now();
-            const statusEl = document.getElementById("status");
-            statusEl.parentElement.style.display = "block";
-            updateButtonStatus(true);
-            
-            await write(EpdCmd.INIT);
-            
-            // 3. 第一次传输原始数据 + 刷新 (下位机 e6_stage 为 0，内部使用 color_map 转换)
-            // 如果您之前把 CRC 传输用得很稳，用 writeImageCRC 最好
-            await transferFn(rawData, 'color');
-            await write(EpdCmd.REFRESH);
-            
-            addLog("⏳ E6 第一阶段刷新中（下位机正在执行第一次物理刷屏，需等待10秒）...");
-            // 4. 死等10秒！确保下位机硬件刷新完成，并且 e6_stage 已被翻转成 1
-            await sleep(10000); 
-            
-            // 5. 第二次传输完全相同的原始数据 + 刷新 (下位机 e6_stage 为 1，内部使用 color_map1 转换)
-            await transferFn(rawData, 'color');
-            await write(EpdCmd.REFRESH);
-            
-            updateButtonStatus();
-            const elapsed = (Date.now() - startTime) / 1000;
-            addLog(`✅ E6 六色屏双阶段传输完成！耗时: ${elapsed}s`);
-            setStatus(`✅ E6 传输完成！耗时: ${elapsed}s`);
-            setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
-            return;
-    } else if (ditherMode === 'fourColor') {
-        await transferFn(processedData, 'color');
-    } else if (ditherMode === 'threeColor') {
-        const half = Math.floor(processedData.length / 2);
-        const bwData = processedData.slice(0, half);
-        const redData = processedData.slice(half);
-        if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
-            await transferFn(convertUC8159(bwData, redData), 'bw');
-        } else {
-            await transferFn(bwData, 'bw');
-            await transferFn(redData, 'red');
-        }
-    } else if (ditherMode === 'blackWhiteColor') {
-        if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
-            const empty = new Uint8Array(processedData.length).fill(0xFF);
-            await transferFn(convertUC8159(processedData, empty), 'bw');
-        } else {
-            await transferFn(processedData, 'bw');
-        }
-    } else {
-        addLog("当前固件不支持此颜色模式。");
-        updateButtonStatus();
-        return;
-    }
-
-    await write(EpdCmd.REFRESH);
-    updateButtonStatus();
-
-    const elapsed = (Date.now() - startTime) / 1000;
-    addLog(`发送完成！耗时: ${elapsed}s`);
-    setStatus(`发送完成！耗时: ${elapsed}s`);
-    addLog("屏幕刷新完成前请不要操作。");
-    setTimeout(() => {
-        statusEl.parentElement.style.display = "none";
-    }, 5000);
-}*/
-//支持槽位版
-/*
-async function sendimg(options = {}) {
-    if (cropManager.isCropMode()) {
-        alert("请先完成图片裁剪！发送已取消。");
-        return;
-    }
-
-    if (appModeEnabled) {
-        await sendimgAppMode();
-        return;
-    }
-
-    // ---- Web 模式 ----
-    const hasSpecialContent = paintManager && (
-        (paintManager.scheduleData && paintManager.scheduleData.length > 0) ||
-        (paintManager.todoData && paintManager.todoData.length > 0) ||
-        paintManager.cardData ||
-        paintManager.wifiData
-    );
-    if (hasSpecialContent) {
-        addLog("特殊内容发送：重绘画布（禁用抖动/对比度，直接按渲染结果发送）");
-        paintManager.redrawAll();
-    } else {
-        if (typeof convertDithering === 'function') convertDithering();
-    }
-
-    // 获取画布图像数据（用于发送和缓存）
-    const canvasSizeVal = document.getElementById('canvasSize').value;
-    const ditherMode = document.getElementById('ditherMode').value;
-    const epdDriverSelect = document.getElementById('epddriver');
-    const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
-
-    if (selectedOption.getAttribute('data-size') !== canvasSizeVal && !confirm("警告：画布尺寸和驱动不匹配，是否继续？")) return;
-    if (selectedOption.getAttribute('data-color') !== ditherMode && !confirm("警告：颜色模式和驱动不匹配，是否继续？")) return;
-
-    startTime = Date.now();
-    const statusEl = document.getElementById("status");
-    statusEl.parentElement.style.display = "block";
-
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const processedData = processImageData(imageData, ditherMode);
-
-    // ---- 槽位支持：如果指定了目标槽位，先选择并缓存预览 ----
-    const targetSlot = Number.isInteger(options.slot) ? options.slot : null;
-    if (targetSlot != null) {
-        if (targetSlot < 0 || targetSlot >= slotState.count) {
-            addLog(`无效的槽位编号：${targetSlot + 1}，当前槽位总数 ${slotState.count}`);
-            return;
-        }
-        // 选择槽位
-        if (!await write(EpdCmd.SET_SLOT, new Uint8Array([0, targetSlot]))) {
-            addLog(`切换到槽位 ${targetSlot + 1} 失败。`);
-            return;
-        }
-        // 缓存预览（在发送前）
-        cacheCurrentSlotPreview(targetSlot, processedData, ditherMode);
-    }
-
-    updateButtonStatus(true);
-    await write(EpdCmd.INIT);
-
-    const useCRC = (appVersion >= 0x20) && typeof BleTransfer !== 'undefined';
-    const transferFn = useCRC ? writeImageCRC : writeImage;
-    if (useCRC) addLog("使用CRC校验传输模式");
-
-    // ---- 根据颜色模式发送 ----
-    if (ditherMode === 'sixColor') {
-        // 六色特殊处理（与原有代码相同）
-        const sixColorPalette = epdRealColors.sixColor;
-        const indexArray = extractSixColorIndex(imageData, sixColorPalette);
-        const map = [2, 6, 5, 3, 0, 1];
-        const mappedArray = new Uint8Array(indexArray.length);
-        for (let i = 0; i < indexArray.length; i++) {
-            mappedArray[i] = map[indexArray[i]];
-        }
-        const rawData = packSixColorTo4bit(mappedArray, canvas.width, canvas.height);
-        startTime = Date.now();
-        updateButtonStatus(true);
-        await write(EpdCmd.INIT);
-        await transferFn(rawData, 'color');
-        await write(EpdCmd.REFRESH);
-        addLog("⏳ E6 第一阶段刷新中...");
-        await sleep(10000);
-        await transferFn(rawData, 'color');
-        await write(EpdCmd.REFRESH);
-        updateButtonStatus();
-        const elapsed = (Date.now() - startTime) / 1000;
-        addLog(`✅ E6 六色屏双阶段传输完成！耗时: ${elapsed}s`);
-        setStatus(`✅ E6 传输完成！耗时: ${elapsed}s`);
-        setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
-        return;
-    } else if (ditherMode === 'fourColor') {
-        await transferFn(processedData, 'color');
-    } else if (ditherMode === 'threeColor') {
-        const half = Math.floor(processedData.length / 2);
-        const bwData = processedData.slice(0, half);
-        const redData = processedData.slice(half);
-        if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
-            await transferFn(convertUC8159(bwData, redData), 'bw');
-        } else {
-            await transferFn(bwData, 'bw');
-            await transferFn(redData, 'red');
-        }
-    } else if (ditherMode === 'blackWhiteColor') {
-        if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
-            const empty = new Uint8Array(processedData.length).fill(0xFF);
-            await transferFn(convertUC8159(processedData, empty), 'bw');
-        } else {
-            await transferFn(processedData, 'bw');
-        }
-    } else {
-        addLog("当前固件不支持此颜色模式。");
-        updateButtonStatus();
-        return;
-    }
-
-    // ⚠️ 找到这一段（在所有颜色模式发送完成后）
-    addLog('图片数据发送完成，等待屏幕刷新...');
-    setStatus('图片数据发送完成，正在刷新屏幕...');
-
-    // 🆕 启动超时等待
-    startImageRefreshWait();
-
-    // 发送刷新命令
-    if (!await write(EpdCmd.REFRESH)) {
-        cancelImageRefreshWait();
-        setStatus('❌ 刷新命令发送失败。');
-        imageTransferActive = false;
-        updateButtonStatus();
-        return;
-    }
-    await write(EpdCmd.REFRESH);
-    updateButtonStatus();
-
-    const elapsed = (Date.now() - startTime) / 1000;
-    addLog(`发送完成！耗时: ${elapsed}s`);
-    setStatus(`发送完成！耗时: ${elapsed}s`);
-    addLog("屏幕刷新完成前请不要操作。");
-    setTimeout(() => {
-        statusEl.parentElement.style.display = "none";
-    }, 5000);
-}*/
+// ==================== 发送图片（支持三协议）====================
 async function sendimg(options = {}) {
     if (cropManager.isCropMode()) {
         alert("请先完成图片裁剪！发送已取消。");
@@ -2398,136 +2077,6 @@ async function reConnect() {
     setTimeout(async () => { await connect(); }, 300);
 }
 
-/*旧版好用的
-async function connect() {
-    if (!bleDevice || epdCharacteristic) return;
-    try {
-        addLog("正在连接: " + bleDevice.name);
-        gattServer = await bleDevice.gatt.connect();
-        addLog("  找到 GATT Server");
-        // 先尝试 Web 协议
-        try {
-            epdService = await gattServer.getPrimaryService('62750001-d828-918d-fb46-b6c11c675aec');
-            addLog("  找到 EPD Service (Web 协议)");
-            epdCharacteristic = await epdService.getCharacteristic('62750002-d828-918d-fb46-b6c11c675aec');
-            addLog("  找到 RX Characteristic");
-            txCharacteristic = await epdService.getCharacteristic('62750003-d828-918d-fb46-b6c11c675aec');
-            addLog("  找到 TX Characteristic");
-            await epdCharacteristic.startNotifications();
-            epdCharacteristic.addEventListener('characteristicvaluechanged', (event) => { handleNotify(event.target.value, msgIndex++); });
-            addLog("  通知已开启");
-            await sleep(50);
-            appModeEnabled = false;
-            addLog("📡 协议模式: 网页模式");
-        } catch (e) {
-            addLog("Web 协议识别失败，尝试 APP 协议...");
-            try {
-                epdService = await gattServer.getPrimaryService('0000ff01-0000-1000-8000-00805f9b34fb');
-                addLog("  找到 EPD Service (APP 协议)");
-                cmdCharacteristic = await epdService.getCharacteristic('0000ff03-0000-1000-8000-00805f9b34fb');
-                addLog("  找到 WriteCMD Characteristic (0000ff03)");
-                epdCharacteristic = await epdService.getCharacteristic('0000ff02-0000-1000-8000-00805f9b34fb');
-                addLog("  找到 WritePic Characteristic (0000ff02)");
-                txCharacteristic = await epdService.getCharacteristic('0000ff04-0000-1000-8000-00805f9b34fb');
-                addLog("  找到 Notify Characteristic (0000ff04)");
-
-                try { 
-                    await txCharacteristic.startNotifications(); 
-                    txCharacteristic.addEventListener('characteristicvaluechanged', (event) => { 
-                        handleNotify(event.target.value, msgIndex++); 
-                    }); 
-                    addLog("  通知已开启");
-                } catch(e2){ 
-                    addLog("  通知开启失败（不影响写操作）: "+e2.message);
-                }
-                appModeEnabled = true;
-                addLog("📡 协议模式: APP 模式");
-
-                if (typeof AppProtocol !== 'undefined') {
-                    AppProtocol.setCharacteristics(cmdCharacteristic, epdCharacteristic);
-                    AppProtocol.setNotifyCharacteristic(txCharacteristic);   // 新增这一行
-                    AppProtocol.setLogCallback(addLog);   // 添加这一行
-                    
-                    // ========== MTU 协商（大幅提升速度） ==========
-                    let actualMtu = 23;
-                    try {
-                        // 请求 MTU = 256
-                        await gattServer.requestMTU(256);
-                        addLog("  已请求 MTU=256");
-                        await sleep(500);
-                        // 获取协商后的实际 MTU（不同浏览器位置不同）
-                         if (gattServer.mtu) {
-                             actualMtu = gattServer.mtu;
-                             addLog(`  协商实际 MTU (gattServer.mtu) = ${actualMtu}`);
-                          } else if (cmdCharacteristic.service.device.gatt && cmdCharacteristic.service.device.gatt.mtu) {
-                              actualMtu = cmdCharacteristic.service.device.gatt.mtu;
-                              addLog(`  协商实际 MTU (device.gatt.mtu) = ${actualMtu}`);
-                          } else {
-                              addLog(`  ⚠️ 无法获取实际 MTU，使用默认 23`);
-                          }
-                    } catch(mtuErr) {
-                         addLog(`  MTU 协商失败: ${mtuErr.message}，使用默认 23`);
-                    }
-                    // 关键：将 MTU 应用到 AppProtocol（负载大小 = MTU - 3）
-                    AppProtocol.setMtuSize(actualMtu);
-                    addLog(`  ✅ APP模式数据包负载大小 = ${actualMtu - 3} 字节`);
-                    
-                    // 强制设置七色屏驱动（保持不变）
-                    const epdDriverSelect = document.getElementById('epddriver');
-                    // 强制添加并选择 0x06 七色驱动
-                    let option = Array.from(epdDriverSelect.options).find(opt => opt.value === 'FF');
-                    if (!option) {
-                        option = document.createElement('option');
-                        option.value = 'FF';
-                        option.setAttribute('data-color', 'sevenColor');
-                        option.setAttribute('data-size', '7.3E6_800_480');
-                        option.text = '7.3寸 (七色, Spectra 6)';
-                        epdDriverSelect.appendChild(option);
-                    }
-                    epdDriverSelect.value = 'FF';
-                    const ditherModeSelect = document.getElementById('ditherMode');
-                    if (ditherModeSelect) ditherModeSelect.value = 'sevenColor';
-                    const canvasSizeSelect = document.getElementById('canvasSize');
-                    if (canvasSizeSelect) canvasSizeSelect.value = '7.3E6_800_480';
-                    updateCanvasSize();
-                    addLog("✅ APP 模式：已强制设置为七色 7.3 寸屏幕 (Spectra 6)");
-                    AppProtocol.setEpdType(0x06);
-                    const abSelect = document.getElementById('abSelect');
-                    AppProtocol.setEpdIndex(abSelect ? parseInt(abSelect.value) : 1);
-                    const compressCheck = document.getElementById('compressEnable');
-                    AppProtocol.setCompress(compressCheck ? compressCheck.checked : false);
-                    addLog("  AppProtocol 初始化完成");
-                } else { addLog("  警告：AppProtocol 未加载，APP 模式无法发送图片"); }
-            } catch (e2) { throw new Error("无法识别设备协议，请确认设备固件是否支持"); }
-        }
-        updateUIBasedOnProtocol();
-        if (!appModeEnabled) {
-            try { const versionData = await txCharacteristic.readValue(); appVersion = versionData.getUint8(0); addLog(`固件版本: 0x${appVersion.toString(16)}`); addLog(`APP版本: v${APP_VERSION} (${APP_BUILD_DATE})`); } catch(e){ appVersion=0x15; }
-            if (typeof BleTransfer !== 'undefined') BleTransfer.init();
-            await write(EpdCmd.INIT);
-            // 新增：自动读取槽位信息
-            await refreshSlots();
-        } else {
-            appVersion = 0x20;
-            addLog("APP 模式：固件版本假定为 0x20");
-        }
-        if (!appModeEnabled && appVersion < 0x16) {
-            const oldURL = "https://tsl0922.github.io/EPD-nRF5/v1.5";
-            alert("!!!注意!!!\n当前固件版本过低，可能无法正常使用部分功能，建议升级到最新版本。");
-            if (confirm('是否访问旧版本上位机？')) location.href = oldURL;
-            setTimeout(()=> addLog(`如遇到问题，可访问旧版本上位机: ${oldURL}`), 500);
-        }
-        document.getElementById("connectbutton").innerHTML = '断开';
-        updateButtonStatus();
-        addLog("✅ 连接成功，可以发送指令或图片");
-    } catch (e) {
-        console.error(e);
-        if (e.message) addLog("connect: " + e.message);
-        disconnect();
-        return;
-    }
-}
-*/
 async function connect() {
     if (!bleDevice || epdCharacteristic) return;
     try {
@@ -2698,58 +2247,15 @@ async function connect() {
     }
 }
 
-/*不支持槽位的最稳定版
 function handleNotify(value, idx) {
     const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-
-    // APP 模式：Notify 用于 CRC 传输的 ACK/状态，或者忽略
-    if (appModeEnabled) {
-        // 如果有 CRC 传输模块，让其处理（BleTransfer 未在 APP 模式使用，但保留以防万一）
+    const isImageInfo = data.length >= 4 && data[0] === 0x69 && data[1] === 0x6D &&
+        data[2] === 0x67 && data[3] === 0x3D;
+    if (slotReadState && slotReadState.expectedChunk && !isImageInfo) {
+        receiveSlotChunk(data);
         return;
     }
-
-    // ========== 以下仅 Web 协议 ==========
-    // CRC 传输处理
-    if (data.length >= 1 && (data[0] === 0xA0 || data[0] === 0xA1)) {
-        if (typeof BleTransfer !== 'undefined') BleTransfer.handleNotification(value);
-        return;
-    }
-
-    // idx === 0: 设备主动上报配置（仅 Web 协议）
-    if (idx === 0) {
-        addLog(`收到配置：${bytes2hex(data)}`);
-        const epdpins = document.getElementById("epdpins");
-        const epddriver = document.getElementById("epddriver");
-        epdpins.value = bytes2hex(data.slice(0, 7));
-        if (data.length > 10) epdpins.value += bytes2hex(data.slice(10, 11));
-        epddriver.value = bytes2hex(data.slice(7, 8));
-        a0_fix = 0;               // 配置上报时重置（安全兜底）
-        updateDitcherOptions();
-    } else {
-        // 普通文本消息
-        if (!textDecoder) textDecoder = new TextDecoder();
-        const msg = textDecoder.decode(data);
-        addLog(msg, '⇓');
-        if (msg.startsWith('mtu=') && msg.length > 4) {
-            const mtu = parseInt(msg.substring(4));
-            document.getElementById('mtusize').value = mtu;
-            addLog(`MTU 已更新为: ${mtu}`);
-        } else if (msg.startsWith('t=') && msg.length > 2) {
-            const t = parseInt(msg.substring(2)) + (new Date().getTimezoneOffset() * 60);
-            addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
-            addLog(`本地时间: ${new Date().toLocaleString()}`);
-        }// 新增：处理 a0_fix 消息
-        else if (msg.startsWith('a0_fix=')) {
-            const val = parseInt(msg.substring(7), 10);
-            a0_fix = (val === 1) ? 1 : 0;   // 根据设备发送的值设置
-            addLog(`a0_fix 设置为: ${a0_fix}`);
-        }
-    }
-}*/
-
-function handleNotify(value, idx) {
-    const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-
+    
     if (appModeEnabled) {
         // APP 模式不处理 Web 消息
         return;
@@ -2763,129 +2269,73 @@ function handleNotify(value, idx) {
         return;
     }
 
-    // 配置上报
-    if (idx === 0) {
+    const isTextNotification = data.length > 0 && data.every(byte => byte >= 0x20 && byte <= 0x7E);
+    if ((!isTextNotification && data.length === 14) || idx === 0) {
         addLog(`收到配置：${bytes2hex(data)}`);
         const epdpins = document.getElementById("epdpins");
         const epddriver = document.getElementById("epddriver");
         epdpins.value = bytes2hex(data.slice(0, 7));
         if (data.length > 10) epdpins.value += bytes2hex(data.slice(10, 11));
+        currentPinsValue = epdpins.value.trim().toLowerCase();
         epddriver.value = bytes2hex(data.slice(7, 8));
         deviceDriverValue = bytes2hex(data.slice(7, 8));   // 新增：保存驱动值
         a0_fix = 0;
+        displayErrorActive = false;
         updateDitcherOptions();
-        return;
-    }
-
-    // 非文本数据 → 尝试作为槽位数据块
-    // 3️⃣ 判断是否为可打印文本（允许换行符）
-    const isText = data.every(byte => 
-        (byte >= 0x20 && byte <= 0x7E) || byte === 0x0A || byte === 0x0D
-    );
-    if (!isText) {
-        // --- 新增：优先处理槽位数据块接收 ---
-        if (slotReadState && slotReadState.expectedChunk) {
-            receiveSlotChunk(data);
+    } else {
+        if (textDecoder == null) textDecoder = new TextDecoder();
+        const msg = textDecoder.decode(data);
+        // ---- 自动识别驱动作者（仅首次） ----
+        if (!driverAuthorDetected) {
+            let presetId = null;
+            if (msg.includes('DONGSHAN')) {
+                presetId = 'dongshan';
+            } else if (msg.includes('GUOWANGYANYU')) {
+                presetId = 'GuoWangYanYu';
+            } else if (msg.includes('REG') || msg.includes('REGISTERED')) {
+                presetId = 'tsl0922';
+            }
+            if (presetId) {
+                applyDriverPresetAll(presetId);
+                driverAuthorDetected = true;
+                addLog(`✅ 自动识别驱动作者: ${DRIVER_PRESETS.find(p => p.id === presetId).name} 设备ID:${deviceDriverValue}`);
+            }
         }
-        addLog(`收到二进制数据：${bytes2hex(data)}`, '⇓');
-        return;
-    }
-
-    // 文本消息
-    if (!textDecoder) textDecoder = new TextDecoder();
-    const msg = textDecoder.decode(data);
-    addLog(msg, '⇓');
-    
-    // ---- 自动识别驱动作者（仅首次） ----
-    if (!driverAuthorDetected) {
-        let presetId = null;
-        if (msg.includes('DONGSHAN')) {
-            presetId = 'dongshan';
-        } else if (msg.includes('GUOWANGYANYU')) {
-            presetId = 'GuoWangYanYu';
-        } else if (msg.includes('REG') || msg.includes('REGISTERED')) {
-            presetId = 'tsl0922';
-        }
-        if (presetId) {
-            applyDriverPresetAll(presetId);
-            driverAuthorDetected = true;
-            addLog(`✅ 自动识别驱动作者: ${DRIVER_PRESETS.find(p => p.id === presetId).name} 设备ID:${deviceDriverValue}`);
-        }
-    }
-
-    // 1. 应用槽位信息
-    if (applySlotsMessage(msg)) {
-        addLog('图片槽位状态已更新。');
-        return;
-    }
-
-    // 2. 开始读取槽位图片
-    if (beginSlotImageRead(msg)) {
-        addLog('开始接收槽位图片。');
-        return;
-    }
-
-    // 3. 槽位数据块开始
-    if (beginSlotChunk(msg)) {
-        return;
-    }
-
-    // 🆕 4. 屏幕刷新完成通知
-    if (msg === 'ready=1') {
-        completeImageRefresh();
-        return;
-    }
-
-    // 🆕 5. 显示错误处理
-    if (msg.startsWith('display_error=')) {
-        const errorCode = msg.substring('display_error='.length);
-        handleDisplayError(errorCode);
-        return;
-    }
-
-    // 🆕 6. 槽位错误处理
-    if (msg.startsWith('slot_error=')) {
-        const errorMessage = `槽位操作失败：${msg.substring('slot_error='.length)}`;
-        if (slotReadState) {
-            failSlotImageRead(errorMessage);
-        } else {
-            const status = document.getElementById('slotReadStatus');
-            if (status) {
+        if (!msg.startsWith('chunk=')) addLog(msg, '⇓');
+        if (applySlotsMessage(msg)) {
+            addLog('图片槽位状态已更新。');
+        } else if (msg === 'ready=1') {
+            completeImageRefresh();
+        } else if (beginSlotImageRead(msg)) {
+            addLog('开始接收槽位图片。');
+        } else if (beginSlotChunk(msg)) {
+            // The next notification contains the binary chunk.
+        } else if (msg.startsWith('display_error=')) {
+            handleDisplayError(msg.substring('display_error='.length));
+        } else if (msg.startsWith('slot_error=')) {
+            const errorMessage = `槽位操作失败：${msg.substring('slot_error='.length)}`;
+            if (slotActionPending) setSlotActionPending(false);
+            if (slotReadState) {
+                failSlotImageRead(errorMessage);
+            } else {
+                const status = document.getElementById('slotReadStatus');
                 status.hidden = false;
                 status.textContent = errorMessage;
+                addLog(errorMessage);
             }
-            addLog(errorMessage);
-            if (slotActionPending) setSlotActionPending(false);
+        } else if (msg.startsWith('mtu=') && msg.length > 4) {
+            const mtuParts = msg.substring(4).trim().split(/\s+/);
+            const mtuSize = parseInt(mtuParts[0], 10);
+            rleSupport = mtuParts.includes('rle=1');
+            document.getElementById('mtusize').value = mtuSize;
+            addLog(`MTU 已更新为: ${mtuSize}`);
+            if (rleSupport) addLog('设备已启用 RLE 压缩传输。');
+        } else if (msg.startsWith('t=') && msg.length > 2) {
+            const t = parseInt(msg.substring(2)) + new Date().getTimezoneOffset() * 60;
+            addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
+            addLog(`本地时间: ${new Date().toLocaleString()}`);
         }
-        return;
     }
-
-    if (msg.startsWith('mtu=') && msg.length > 4) {
-        const mtuParts = msg.substring(4).trim().split(/\s+/);
-        const mtuSize = parseInt(mtuParts[0], 10);
-        rleSupport = mtuParts.includes('rle=1');
-        const mtuInput = document.getElementById('mtusize');
-        if (mtuInput) mtuInput.value = mtuSize;
-        addLog(`MTU 已更新为: ${mtuSize}`);
-        if (rleSupport) addLog('设备已启用 RLE 压缩传输。');
-        return;
-    }
-
-    if (msg.startsWith('t=') && msg.length > 2) {
-        const t = parseInt(msg.substring(2)) + (new Date().getTimezoneOffset() * 60);
-        addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
-        addLog(`本地时间: ${new Date().toLocaleString()}`);
-        return;
-    }
-
-    if (msg.startsWith('a0_fix=')) {
-        const val = parseInt(msg.substring(7), 10);
-        a0_fix = (val === 1) ? 1 : 0;
-        addLog(`a0_fix 设置为: ${a0_fix}`);
-        return;
-    }
-
-    // 其他消息不做特殊处理
 }
 
 // ==================== 日志和状态 ====================
@@ -4033,14 +3483,6 @@ function initDriverPresetSelector() {
     // 立即应用默认预设
     applyDriverPreset('dongshan');
 }
-/*
-// 页面加载完成后初始化
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initDriverPresetSelector);
-} else {
-    initDriverPresetSelector();
-}
-*/
 
 
 // ==================== 主入口 ====================
