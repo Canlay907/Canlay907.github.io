@@ -1653,25 +1653,47 @@ async function sendimg(options = {}) {
         for (let i = 0; i < indexArray.length; i++) {
             mappedArray[i] = hwMap[indexArray[i]];
         }
+        if (canvas.width == 768 || canvas.width == 552) {
+            //3.98寸屏幕的特殊处理，直接把映射后的索引数据交错成4bit数据，传给固件
+            const firstData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, true);
+            const secondData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, false);
 
-        const firstData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, true);
-        const secondData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, false);
+            startTime = Date.now();
+            const statusEl = document.getElementById("status");
+            statusEl.parentElement.style.display = "block";
+            updateButtonStatus(true);
+            await write(EpdCmd.INIT);
 
-        startTime = Date.now();
-        const statusEl = document.getElementById("status");
-        statusEl.parentElement.style.display = "block";
-        updateButtonStatus(true);
-        await write(EpdCmd.INIT);
+            // ========== 第一阶段刷新 color_map 清屏-显示-红黄绿 ==========
+            await transferFn(firstData, 'color');
+            await write(EpdCmd.REFRESH);
+            addLog("⏳ E6 第一阶段刷新( color_map )等待10秒...");
+            await sleep(10000);
 
-        // ========== 第一阶段刷新 color_map 清屏-显示-红黄绿 ==========
-        await transferFn(firstData, 'color');
-        await write(EpdCmd.REFRESH);
-        addLog("⏳ E6 第一阶段刷新( color_map )等待10秒...");
-        await sleep(10000);
+            // ========== 第二阶段刷新 color_map1 显示-蓝黑==========
+            await transferFn(secondData, 'blue');
+            await write(EpdCmd.REFRESH);
+        } else {
 
-        // ========== 第二阶段刷新 color_map1 显示-蓝黑==========
-        await transferFn(secondData, 'blue');
-        await write(EpdCmd.REFRESH);
+            // 原始E6 打包4bit原始数据（传给固件第一层输入）
+            const rawData = packSixColorTo4bit(mappedArray, canvas.width, canvas.height);
+
+            startTime = Date.now();
+            const statusEl = document.getElementById("status");
+            statusEl.parentElement.style.display = "block";
+            updateButtonStatus(true);
+            await write(EpdCmd.INIT);
+
+            // ========== 第一阶段刷新 color_map ==========
+            await transferFn(rawData, 'color');
+            await write(EpdCmd.REFRESH);
+            addLog("⏳ E6 第一阶段刷新( color_map )等待10秒...");
+            await sleep(10000);
+
+            // ========== 第二阶段刷新 color_map1 ==========
+            await transferFn(rawData, 'color');
+            await write(EpdCmd.REFRESH);
+        }
 
         updateButtonStatus();
         const elapsed = (Date.now() - startTime) / 1000;
@@ -1705,10 +1727,18 @@ async function sendimg(options = {}) {
     }
 
     // ---- 刷新控制 ----
-    if (noRefresh) {
-        // 仅发送数据，不刷新
-        addLog(`✅ 图片数据已存入槽位 ${targetSlot !== null ? targetSlot + 1 : ''}，未刷新屏幕。`);
-        setStatus(`存入完成，未刷新屏幕。`);
+    if (noRefresh && targetSlot !== null) {
+        if(document.getElementById("driverPreset").value == "GuoWangYanYu"){
+            await write(EpdCmd.REFRESH);
+            addLog(`✅ 图片数据已存入槽位 ${targetSlot + 1}，等待刷新...`);
+            
+        }else{
+            // 发送完成标记，告知下位机结束当前槽位上载 //东山驱动专用
+            await write(EpdCmd.WRITE_IMG, new Uint8Array([0xFF]));
+            // 仅发送数据，不刷新
+            addLog(`✅ 图片数据已存入槽位 ${targetSlot + 1}，未刷新屏幕。`);
+            setStatus(`存入完成，未刷新屏幕。`);
+        }
         imageTransferActive = false;
         updateButtonStatus();
         setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);

@@ -84,6 +84,30 @@ const EpdFormat = (function() {
         if (shift === 0) picData[byteIdx++] = temp;
         return picData;
     }
+    
+    // 六色打包颜色索引
+    function packSixColorIndex(width, height, indexArray) {
+        const dataLength = Math.ceil(width * height / 2);
+        const picData = new Uint8Array(dataLength);
+        let byteIdx = 0, shift = 4, temp = 0;
+        const nibbleMap = {0x00:0, 0xFF:1, 0x4C:2, 0xE2:3, 0x96:5, 0x1D:6};
+        for (let j = 0; j < height; j++) {
+            for (let i = 0; i < width; i++) {
+                const idx = j * width + i;
+                let nibble = nibbleMap[indexArray[idx]] || 1;
+                if (shift === 4) {
+                    temp = nibble << 4;
+                    shift = 0;
+                } else {
+                    temp |= nibble;
+                    picData[byteIdx++] = temp;
+                    shift = 4;
+                }
+            }
+        }
+        if (shift === 0) picData[byteIdx++] = temp;
+        return picData;
+    }
 
     // ---------- 打包函数（完全对齐 APP）----------
     function packBW1bit(width, height, indexArray) {
