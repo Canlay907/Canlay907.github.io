@@ -69,6 +69,7 @@ const canvasSizes = [
     { name: '2.9_384_168', width: 384, height: 168 },
     { name: '3.1_300_300', width: 304, height: 304 },
     { name: '3.5_384_184', width: 384, height: 184 },
+    { name: '3.68_792_528', width: 792, height: 528 },//3.68寸E6
     { name: '3.7_240_416', width: 240, height: 416 },//3.7寸 第一代AI智屏壳
     { name: '3.7_416_240', width: 416, height: 240 },
     { name: '3.97_800_480', width: 800, height: 480 },
@@ -620,7 +621,8 @@ async function writeImage(data, step = 'bw') {
         }
         const chunk = data.subarray(i, Math.min(i + mtu, data.length));
         const payload = new Uint8Array(chunk.length + 1);
-        payload[0] = (step === 'bw' ? 0x0F : 0x00) | (i === 0 ? 0x00 : 0xF0);
+        //payload[0] = (step === 'bw' ? 0x0F : 0x00) | (i === 0 ? 0x00 : 0xF0);
+        payload[0] = (step === 'blue' && i === 0) ? 0x01 : (step === 'bw' ? 0x0F : 0x00) | (i === 0 ? 0x00 : 0xF0);
         payload.set(chunk, 1);
         if (noReplyCount > 0) {
             await write(EpdCmd.WRITE_IMG, payload, false);
@@ -667,7 +669,7 @@ async function setDriver() {
     await write(EpdCmd.INIT, document.getElementById("epddriver").value);
     addLog("驱动配置已设置");
     a0_fix = 0;   // 重置交错处理标志，因为驱动已切换
-    if(document.getElementById('driverPreset').value = "tsl0922") addLog("驱动配置已设置，a0_fix 已重置为 0");
+    if(document.getElementById('driverPreset').value == "tsl0922") addLog("驱动配置已设置，a0_fix 已重置为 0");
 }
 
 function getWeekStart() {
@@ -1573,6 +1575,24 @@ function JD79660JiaoCuoYuChuLi(rawData) {
     return interleaveBuf;
 }
 
+
+// 在全局定义一个 Promise 的 resolver
+let readyResolver = null;
+
+function waitForReady() {
+    return new Promise((resolve) => {
+        readyResolver = resolve;
+        // 超时保护（如 30 秒）
+        setTimeout(() => {
+            if (readyResolver) {
+                readyResolver();
+                readyResolver = null;
+                addLog("⚠️ 等待 ready=1 超时，强制继续");
+            }
+        }, 30000);
+    });
+}
+
 // ==================== 发送图片（支持三协议）====================
 async function sendimg(options = {}) {
     if (cropManager.isCropMode()) {
@@ -1653,7 +1673,7 @@ async function sendimg(options = {}) {
         for (let i = 0; i < indexArray.length; i++) {
             mappedArray[i] = hwMap[indexArray[i]];
         }
-        if (canvas.width == 768 || canvas.width == 552) {
+        if ((canvas.width == 768 || canvas.width == 552) || (canvas.width == 792 || canvas.width == 528)) {
             //3.98寸屏幕的特殊处理，直接把映射后的索引数据交错成4bit数据，传给固件
             const firstData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, true);
             const secondData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, false);
@@ -1667,8 +1687,10 @@ async function sendimg(options = {}) {
             // ========== 第一阶段刷新 color_map 清屏-显示-红黄绿 ==========
             await transferFn(firstData, 'color');
             await write(EpdCmd.REFRESH);
-            addLog("⏳ E6 第一阶段刷新( color_map )等待10秒...");
-            await sleep(10000);
+            addLog("⏳ E6 第一阶段刷新( color_map )等待(ready=1)...");
+            // 等待下位机发送 "ready=1" 通知
+            await waitForReady();
+            await sleep(1000);
 
             // ========== 第二阶段刷新 color_map1 显示-蓝黑==========
             await transferFn(secondData, 'blue');
@@ -1687,8 +1709,12 @@ async function sendimg(options = {}) {
             // ========== 第一阶段刷新 color_map ==========
             await transferFn(rawData, 'color');
             await write(EpdCmd.REFRESH);
-            addLog("⏳ E6 第一阶段刷新( color_map )等待10秒...");
-            await sleep(10000);
+            //addLog("⏳ E6 第一阶段刷新( color_map )等待10秒...");
+            //await sleep(10000);
+            addLog("⏳ E6 第一阶段刷新( color_map )等待(ready=1)...");
+            // 等待下位机发送 "ready=1" 通知
+            await waitForReady();
+            await sleep(1000);
 
             // ========== 第二阶段刷新 color_map1 ==========
             await transferFn(rawData, 'color');
@@ -2336,6 +2362,10 @@ function handleNotify(value, idx) {
             addLog('图片槽位状态已更新。');
         } else if (msg === 'ready=1') {
             completeImageRefresh();
+            if (readyResolver) {
+                readyResolver();
+                readyResolver = null;
+            }
         } else if (beginSlotImageRead(msg)) {
             addLog('开始接收槽位图片。');
         } else if (beginSlotChunk(msg)) {
@@ -3290,6 +3320,7 @@ const DRIVER_PRESETS = [
                     <option value="1b" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1680)</option>
                     <option value="20" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, UC8151D)</option>
                     <option value="10" data-color="fourColor" data-size="3.1_300_300">3.1寸 (四色, JD79665)</option>
+                    <option value="27" data-color="sixColor" data-size="3.68_792_528">3.68寸 (六色, 高分E6)</option>
                     <option value="18" data-color="threeColor" data-size="3.7_416_240">3.7寸 (三色, AI智屏壳)</option>
                     <option value="1c" data-color="fourColor" data-size="3.97_800_480">3.97寸 (四色, 方角四色屏)</option>
                     <option value="14" data-color="fourColor" data-size="3.98_768_552">3.98寸 (四色, 华为手机壳A0)</option>
