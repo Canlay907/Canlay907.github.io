@@ -108,7 +108,7 @@ let storedImageDataA = null;   // ImageData 对象
 let storedImageDataB = null;
 
 // ==================== 图片槽位相关全局变量 ====================
-let slotState = { count: 0, usedMask: 0, selected: null, fingerprints: [] };
+let slotState = { count: 0, usedMask: 0n, selected: null, fingerprints: [] , totalSize: null   /* 新增：Flash 总容量（字节），null 表示旧固件未报告*/};
 let slotReadState = null;              // 正在读取的槽位信息
 let slotImageCache = new Map();        // 内存缓存：slot -> {width, height, size, colorId, dataUrl, previewKind, fingerprint}
 let slotImageCacheScope = '';          // 用于区分不同设备/驱动的缓存作用域
@@ -164,7 +164,7 @@ function resetVariables() {
     currentPinsValue = '';
     slotState = {
         count: 0,
-        usedMask: 0,
+        usedMask: 0n,
         selected: null,
         fingerprints: []
     };
@@ -263,7 +263,7 @@ function loadSlotImageCache() {
     }
 
     for (let slot = 0; slot < slotState.count; slot++) {
-        const used = (slotState.usedMask & (1 << slot)) !== 0;
+        const used = (slotState.usedMask & (1n << BigInt(slot))) !== 0n;
         const pending = slotPreviewPending.has(slot);
         const fingerprint = slotState.fingerprints[slot] || null;
 
@@ -803,29 +803,51 @@ function applySlotsMessage(message) {
     }
 
     const count = parseInt(countMatch[1], 10);
-    let fingerprintStart = 2;
+    let totalSize = null;
+    let fingerprintStart = 2;   // 默认从 parts[2] 开始尝试读取 selected
     let selected = null;
     // 如果第三个字段是纯数字（0~255），则它是 selected 索引
     if (parts[2] != null && /^\d+$/.test(parts[2])) {
         selected = parseInt(parts[2], 10);
         fingerprintStart = 3;
     }
+    
+    // 2. 检查是否包含 size= 字段（新固件）
+    if (parts.length > fingerprintStart && parts[fingerprintStart].startsWith('size=')) {
+        const sizeStr = parts[fingerprintStart].substring(5);
+        totalSize = parseInt(sizeStr, 10);
+        fingerprintStart++;   // size 字段占用一个位置，指纹往后移
+    }
+    
+    
     // 提取指纹（每个指纹应为 8 位十六进制）
-    const fingerprints = parts.slice(fingerprintStart, fingerprintStart + count)
-        .map(s => /^[0-9a-f]{8}$/i.test(s) ? s.toUpperCase() : null);
+    //const fingerprints = parts.slice(fingerprintStart, fingerprintStart + count)
+        //.map(s => /^[0-9a-f]{8}$/i.test(s) ? s.toUpperCase() : null);
+    // 3. 提取指纹（从 fingerprintStart 开始，取 count 个）
+    const fingerprints = [];
+    for (let i = 0; i < count; i++) {
+        const idx = fingerprintStart + i;
+        if (idx < parts.length && /^[0-9a-f]{8}$/i.test(parts[idx])) {
+            fingerprints.push(parts[idx].toUpperCase());
+        } else {
+            fingerprints.push(null);
+        }
+    }
 
+    // 4. 更新全局状态
     slotState = {
         count,
-        usedMask: Number(parts[1]),
+        usedMask: BigInt(parts[1]), 
         selected,
-        fingerprints
+        fingerprints, 
+        totalSize: isNaN(totalSize) ? null : totalSize
     };
 
     // 加载缓存（会自动校验指纹）
     loadSlotImageCache();
 
     // 处理擦除全部完成
-    const eraseAllCompleted = slotEraseAllPending && slotState.usedMask === 0;
+    const eraseAllCompleted = slotEraseAllPending && slotState.usedMask === 0n;
     if (slotEraseAllPending && !eraseAllCompleted) {
         updateButtonStatus();
         return true;
@@ -874,7 +896,7 @@ function renderSlotGrid(forceDisabled = imageTransferActive || slotActionPending
 
     let usedCount = 0;
     for (let slot = 0; slot < slotState.count; slot++) {
-        const used = (slotState.usedMask & (1 << slot)) !== 0;
+        const used = (slotState.usedMask & (1n << BigInt(slot))) !== 0n;
         const cached = slotImageCache.get(slot) || null;
         const previewPending = !used && cached && slotPreviewPending.has(slot);
         if (used) usedCount++;
@@ -949,7 +971,20 @@ function renderSlotGrid(forceDisabled = imageTransferActive || slotActionPending
         grid.appendChild(item);
     }
 
-    summary.textContent = `${slotState.count} 个槽位，已使用 ${usedCount} 个`;
+    //summary.textContent = `${slotState.count} 个槽位，已使用 ${usedCount} 个`;
+    let infoText = `${slotState.count} 个槽位，已使用 ${usedCount} 个`;
+    if (slotState.totalSize) {
+        const sizeKB = slotState.totalSize / 1024;
+        if (sizeKB >= 1024) {
+            const sizeMB = (sizeKB / 1024).toFixed(1);
+            infoText += `，总容量 ${sizeMB} MB`;
+        } else {
+            infoText += `，总容量 ${sizeKB.toFixed(1)} KB`;
+        }
+    } else {
+        infoText += `，容量未知（旧固件）`;
+    }
+    summary.textContent = infoText;
     hint.textContent = '“存入”会同时刷新屏幕并保存当前画布';
 }
 
@@ -961,7 +996,7 @@ async function saveImageToSlot(slot) {
         addLog(`槽位 ${slot + 1} 未存入：尚未选择图片。`);
         return;
     }
-    const used = (slotState.usedMask & (1 << slot)) !== 0;
+    const used = (slotState.usedMask & (1n << BigInt(slot))) !== 0n;
     if (used && !confirm(`槽位 ${slot + 1} 已有图片，确认覆盖？`)) return;
     // 传入 noRefresh: true
     await sendimg({ slot, noRefresh: true });
@@ -981,7 +1016,7 @@ async function freeImageSlot(slot) {
 }
 
 async function freeAllImageSlots() {
-    if (imageTransferActive || slotActionPending || slotReadState || slotState.usedMask === 0) return;
+    if (imageTransferActive || slotActionPending || slotReadState || slotState.usedMask === 0n) return;
     if (!confirm('确认擦除全部图片槽位？所有已保存图片都将永久删除，此操作不可恢复。')) return;
 
     slotEraseAllPending = true;
@@ -1309,7 +1344,7 @@ function handleDisplayError(code) {
 }
 
 async function startSlotSlide(randomMode = false) {
-    if (slotState.usedMask === 0) {
+    if (slotState.usedMask === 0n) {
         alert('请先存入至少一张图片，再启动轮播。');
         addLog('❌ 轮播未启动：没有可用的图片槽。');
         return false;
@@ -1958,7 +1993,7 @@ function updateButtonStatus(forceDisabled = false) {
     document.getElementById("setDriverbutton").disabled = disabled;
     document.getElementById("syncholidaybutton").disabled = disabled;
     
-    const hasMultiple = (slotState.usedMask & (slotState.usedMask - 1)) !== 0; // 至少2个有效槽位
+    const hasMultiple = (slotState.usedMask & (slotState.usedMask - 1n)) !== 0n; // 至少2个有效槽位
     const randomDisabled = status || !hasMultiple ? 'disabled' : null;
     document.getElementById("randomSlotSlideButton").disabled = randomDisabled;
     
@@ -1972,7 +2007,7 @@ function updateButtonStatus(forceDisabled = false) {
     const startSlideBtn = document.getElementById('startSlotSlideButton');
     const stopSlideBtn = document.getElementById('stopSlotSlideButton');
     if (refreshBtn) refreshBtn.disabled = slotDisabled;
-    if (eraseAllBtn) eraseAllBtn.disabled = slotDisabled || slotState.usedMask === 0 ? 'disabled' : null;
+    if (eraseAllBtn) eraseAllBtn.disabled = slotDisabled || slotState.usedMask === 0n ? 'disabled' : null;
     if (startSlideBtn) startSlideBtn.disabled = slotDisabled;
     if (stopSlideBtn) stopSlideBtn.disabled = slotDisabled;
     
