@@ -20,6 +20,7 @@ const APP_VERSION = '2.1.0';
 const APP_BUILD_DATE = '2026-03-31';
 
 let ditherBrightness = 1.0;    // 亮度系数
+let pwmProtocolVersion = 'legacy';   // 'legacy' 或 'new'
 
 // 蓝牙命令定义（与固件保持一致）
 const EpdCmd = {
@@ -42,6 +43,8 @@ const EpdCmd = {
     SET_SLIDE: 0x33,     // 轮播间隔
     GET_IMAGE: 0x34,     // 读取槽位图片
     GET_SLOTS: 0x35,     // 查询槽位信息
+    
+    PWM_CONTROL:0x40,  /**< PWM控制：模式 + 脉宽 */
     
     SET_CONFIG: 0x90,
     SYS_RESET: 0x91,
@@ -121,6 +124,7 @@ let slotActionPending = false;         // 槽位操作（显示/删除等）进�
 let slotActionTimer = null;            // 🆕 槽位操作超时定时器
 let slotReadTimer = null;
 let slotEraseAllPending = false;
+let ditherSourceImageData = null;
 
 const MAX_SLOT_IMAGE_SIZE = 1024 * 1024;
 const DEFAULT_SLOT_READ_RAW_CHUNK_SIZE = 256;
@@ -621,7 +625,6 @@ async function writeImage(data, step = 'bw') {
         }
         const chunk = data.subarray(i, Math.min(i + mtu, data.length));
         const payload = new Uint8Array(chunk.length + 1);
-        //payload[0] = (step === 'bw' ? 0x0F : 0x00) | (i === 0 ? 0x00 : 0xF0);
         payload[0] = (step === 'blue' && i === 0) ? 0x01 : (step === 'bw' ? 0x0F : 0x00) | (i === 0 ? 0x00 : 0xF0);
         payload.set(chunk, 1);
         if (noReplyCount > 0) {
@@ -670,6 +673,7 @@ async function setDriver() {
     addLog("驱动配置已设置");
     a0_fix = 0;   // 重置交错处理标志，因为驱动已切换
     if(document.getElementById('driverPreset').value == "tsl0922") addLog("驱动配置已设置，a0_fix 已重置为 0");
+    refreshSlots();
 }
 
 function getWeekStart() {
@@ -795,7 +799,7 @@ function setSlotActionPending(pending) {
 
 function applySlotsMessage(message) {
     // 格式: slots=count usedMask [selected] [fingerprint1] [fingerprint2] ...
-    // 例如: slots=5 0x1F 0 ABCD1234 5678EFGH ...
+    // 例如: slots=5 0x1F 0 size=5xxxxxx ABCD1234 5678EFGH ...
     const parts = message.trim().split(/\s+/);
     const countMatch = /^slots=(\d+)$/.exec(parts[0] || '');
     if (!countMatch || parts.length < 2 || !/^(?:0x[0-9a-f]+|\d+)$/i.test(parts[1])) {
@@ -811,6 +815,8 @@ function applySlotsMessage(message) {
         selected = parseInt(parts[2], 10);
         fingerprintStart = 3;
     }
+    const slotvalue = document.getElementById("slot-panel");
+    if(count > 0) slotvalue.style.display = "";
     
     // 2. 检查是否包含 size= 字段（新固件）
     if (parts.length > fingerprintStart && parts[fingerprintStart].startsWith('size=')) {
@@ -837,7 +843,7 @@ function applySlotsMessage(message) {
     // 4. 更新全局状态
     slotState = {
         count,
-        usedMask: BigInt(parts[1]), 
+        usedMask: BigInt(parts[1]),
         selected,
         fingerprints, 
         totalSize: isNaN(totalSize) ? null : totalSize
@@ -971,7 +977,6 @@ function renderSlotGrid(forceDisabled = imageTransferActive || slotActionPending
         grid.appendChild(item);
     }
 
-    //summary.textContent = `${slotState.count} 个槽位，已使用 ${usedCount} 个`;
     let infoText = `${slotState.count} 个槽位，已使用 ${usedCount} 个`;
     if (slotState.totalSize) {
         const sizeKB = slotState.totalSize / 1024;
@@ -1241,9 +1246,19 @@ function finishSlotImageRead() {
         const mode = meta.colorId === 2 ? 'blackWhiteColor' : meta.colorId === 3 ? 'threeColor' : meta.colorId === 4 ? 'fourColor' : meta.colorId === 6 ? 'sixColor' : 'sevenColor';
         const normalized = normalizeSlotImageData(meta);
         const driverValue = document.getElementById('epddriver').value.toLowerCase();
-        const imageData = (driverValue === '08' || driverValue === '09') ?
-            decodeUC8159SlotData(normalized, meta.width, meta.height) :
-            decodeProcessedData(normalized, meta.width, meta.height, mode);
+        let imageData;
+        if (meta.colorId === 6) {
+          // E6 双帧：前半部分为第一帧，后半部分为第二帧
+          const half = Math.floor(normalized.length / 2);
+          const firstFrame = normalized.slice(0, half);
+          const secondFrame = normalized.slice(half, half + Math.ceil(meta.width * meta.height / 4));
+          imageData = decodeSixColorFromDualFrames(firstFrame, secondFrame, meta.width, meta.height);
+          imageData = decodeSixColorFromDualFrames(firstFrame, secondFrame, meta.width, meta.height);
+        } else if (driverValue === '08' || driverValue === '09') {
+          imageData = decodeUC8159SlotData(normalized, meta.width, meta.height);
+        } else {
+          imageData = decodeProcessedData(normalized, meta.width, meta.height, mode);
+        }
         const existingPreview = slotImageCache.get(meta.slot);
         if (!existingPreview || existingPreview.previewKind !== 'original') {
             saveSlotImageCache(meta.slot, {
@@ -1610,7 +1625,6 @@ function JD79660JiaoCuoYuChuLi(rawData) {
     return interleaveBuf;
 }
 
-
 // 在全局定义一个 Promise 的 resolver
 let readyResolver = null;
 
@@ -1695,67 +1709,89 @@ async function sendimg(options = {}) {
     const transferFn = useCRC ? writeImageCRC : writeImage;
     if (useCRC) addLog("使用CRC校验传输模式");
 
-    // ---- 根据颜色模式发送 ----
+    // ========== 六色双刷逻辑 ==========
     if (ditherMode === 'sixColor') {
-        // 1. 获取画布原始六色索引 0黄,1绿,2蓝,3红,4黑,5白
+        // 1. 获取画布原始六色索引（基于 rgbPalette）
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const sixColorPalette = epdRealColors.sixColor;
+        const sixColorPalette = rgbPalette;  // 直接使用目标代码中的 rgbPalette
         const indexArray = extractSixColorIndex(imageData, sixColorPalette);
-
-        // 上位下标转硬件4bit码：0→2,1→6,2→5,3→3,4→0,5→1
+    
+        // 上位下标转硬件4bit码：0黄,1绿,2蓝,3红,4黑,5白 → 2,6,5,3,0,1
         const hwMap = [2, 6, 5, 3, 0, 1];
         const mappedArray = new Uint8Array(indexArray.length);
         for (let i = 0; i < indexArray.length; i++) {
             mappedArray[i] = hwMap[indexArray[i]];
         }
+    
+        // 特殊屏：3.98寸 / 3.68寸
         if ((canvas.width == 768 || canvas.width == 552) || (canvas.width == 792 || canvas.width == 528)) {
-            //3.98寸屏幕的特殊处理，直接把映射后的索引数据交错成4bit数据，传给固件
             const firstData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, true);
             const secondData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, false);
+            
+            // 3. 检查是否为槽位存入模式（targetSlot 且 noRefresh）
+            const targetSlot = Number.isInteger(options.slot) ? options.slot : null;
+            const noRefresh = options.noRefresh === true;
 
+            // 4. 槽位存入分支
+            if (targetSlot !== null && noRefresh) {
+                startTime = Date.now();
+                const statusEl = document.getElementById("status");
+                statusEl.parentElement.style.display = "block";
+                updateButtonStatus(true);
+
+                // 注意：选择槽位已在 sendimg 开头执行过，无需重复
+                // 但需确保已经执行了 write(EpdCmd.SET_SLOT, [0, targetSlot]) 和 cacheCurrentSlotPreview
+
+                // 发送两套数据（连续追加）
+                await writeImage(firstData, 'color');
+                await writeImage(secondData, 'color');
+
+                // 发送结束标记（0xFF）
+                // 根据驱动作者，有些驱动需要特殊处理，这里统一发送 0xFF
+                await write(EpdCmd.WRITE_IMG, new Uint8Array([0xFF]));
+
+                // 槽位存入完成，不刷新
+                addLog(`✅ E6 双次图片数据已存入槽位 ${targetSlot + 1}，未刷新屏幕。`);
+                setStatus(`存入完成，未刷新屏幕。`);
+                imageTransferActive = false;
+                updateButtonStatus();
+                setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
+                return;   // 直接返回，不执行后面的正常刷新逻辑
+            }
+    
             startTime = Date.now();
             const statusEl = document.getElementById("status");
             statusEl.parentElement.style.display = "block";
             updateButtonStatus(true);
             await write(EpdCmd.INIT);
-
-            // ========== 第一阶段刷新 color_map 清屏-显示-红黄绿 ==========
-            await transferFn(firstData, 'color');
+    
+            await writeImage(firstData, 'color');
             await write(EpdCmd.REFRESH);
             addLog("⏳ E6 第一阶段刷新( color_map )等待(ready=1)...");
-            // 等待下位机发送 "ready=1" 通知
             await waitForReady();
             await sleep(1000);
-
-            // ========== 第二阶段刷新 color_map1 显示-蓝黑==========
-            await transferFn(secondData, 'blue');
+    
+            await writeImage(secondData, 'blue');
             await write(EpdCmd.REFRESH);
         } else {
-
-            // 原始E6 打包4bit原始数据（传给固件第一层输入）
             const rawData = packSixColorTo4bit(mappedArray, canvas.width, canvas.height);
-
+    
             startTime = Date.now();
             const statusEl = document.getElementById("status");
             statusEl.parentElement.style.display = "block";
             updateButtonStatus(true);
             await write(EpdCmd.INIT);
-
-            // ========== 第一阶段刷新 color_map ==========
-            await transferFn(rawData, 'color');
+    
+            await writeImage(rawData, 'color');
             await write(EpdCmd.REFRESH);
-            //addLog("⏳ E6 第一阶段刷新( color_map )等待10秒...");
-            //await sleep(10000);
             addLog("⏳ E6 第一阶段刷新( color_map )等待(ready=1)...");
-            // 等待下位机发送 "ready=1" 通知
             await waitForReady();
             await sleep(1000);
-
-            // ========== 第二阶段刷新 color_map1 ==========
-            await transferFn(rawData, 'color');
+    
+            await writeImage(rawData, 'color');
             await write(EpdCmd.REFRESH);
         }
-
+    
         updateButtonStatus();
         const elapsed = (Date.now() - startTime) / 1000;
         addLog(`✅ E6 双阶段传输完成！耗时: ${elapsed}s`);
@@ -2007,7 +2043,7 @@ function updateButtonStatus(forceDisabled = false) {
     const startSlideBtn = document.getElementById('startSlotSlideButton');
     const stopSlideBtn = document.getElementById('stopSlotSlideButton');
     if (refreshBtn) refreshBtn.disabled = slotDisabled;
-    if (eraseAllBtn) eraseAllBtn.disabled = slotDisabled || slotState.usedMask === 0n ? 'disabled' : null;
+    if (eraseAllBtn) eraseAllBtn.disabled = slotDisabled || slotState.usedMask === 0 ? 'disabled' : null;
     if (startSlideBtn) startSlideBtn.disabled = slotDisabled;
     if (stopSlideBtn) stopSlideBtn.disabled = slotDisabled;
     
@@ -2020,6 +2056,12 @@ function disconnect() {
     resetVariables();
     addLog('已断开连接.');
     document.getElementById("connectbutton").innerHTML = '连接';
+    const slotvalue = document.getElementById("slot-panel");
+    slotvalue.style.display = "none";
+    appModeFieldset.style.display = "none";
+    pwmControlFieldset.style.display = "none";
+    pwmProtocolVersion = 'legacy';
+    pwmScheme = 0x01;   // 默认脉宽
 }
 
 // ==================== 根据协议显示/隐藏功能区 ====================
@@ -2170,6 +2212,8 @@ async function reConnect() {
 
 async function connect() {
     if (!bleDevice || epdCharacteristic) return;
+    const slotvalue = document.getElementById("slot-panel");
+    slotvalue.style.display = "none";
     try {
         addLog("正在连接: " + bleDevice.name);
         gattServer = await bleDevice.gatt.connect();
@@ -2194,6 +2238,7 @@ async function connect() {
             appModeEnabled = false;
             addLog("📡 协议模式: 网页模式");
             webProtocolOk = true;
+            appModeFieldset.style.display = "none";
         } catch (e) {
             addLog("Web 协议识别失败，尝试 APP 协议...");
             // 如果 Web 协议失败，但可能部分变量已赋值，清理一下
@@ -2226,6 +2271,7 @@ async function connect() {
 
                 appModeEnabled = true;
                 addLog("📡 协议模式: APP 模式");
+                appModeFieldset.style.display = "";
 
                 if (typeof AppProtocol !== 'undefined') {
                     AppProtocol.setCharacteristics(cmdCharacteristic, epdCharacteristic);
@@ -2313,6 +2359,11 @@ async function connect() {
             } catch (slotErr) {
                 addLog(`⚠️ 自动读取槽位失败（不影响使用）: ${slotErr.message}`);
             }
+            try {
+                await queryPwmStatus();
+            } catch (pwmErr) {
+                addLog(`⚠️ PWM模式读取失败（不影响使用）: ${pwmErr.message}`);
+            }
 
             // 版本过低警告
             if (appVersion < 0x16) {
@@ -2339,20 +2390,32 @@ async function connect() {
 }
 
 function handleNotify(value, idx) {
+    // 将原始数据转换为 Uint8Array
     const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    const isImageInfo = data.length >= 4 && data[0] === 0x69 && data[1] === 0x6D &&
-        data[2] === 0x67 && data[3] === 0x3D;
+
+    // 判断是否为图片信息头 (img=...)
+    const isImageInfo = data.length >= 4 &&
+        data[0] === 0x69 && data[1] === 0x6D &&
+        data[2] === 0x67 && data[3] === 0x3D; // "img="
+
+    // ============================================================
+    // 1. 槽位图片数据块（二进制，以 chunk 指令接收）
+    // ============================================================
     if (slotReadState && slotReadState.expectedChunk && !isImageInfo) {
         receiveSlotChunk(data);
         return;
     }
-    
+
+    // ============================================================
+    // 2. APP 模式：不处理 Web 协议消息
+    // ============================================================
     if (appModeEnabled) {
-        // APP 模式不处理 Web 消息
         return;
     }
 
-    // CRC 传输
+    // ============================================================
+    // 3. CRC 传输应答（0xA0 表示响应，0xA1 表示请求确认）
+    // ============================================================
     if (data.length >= 1 && (data[0] === 0xA0 || data[0] === 0xA1)) {
         if (typeof BleTransfer !== 'undefined') {
             BleTransfer.handleNotification(value);
@@ -2360,23 +2423,104 @@ function handleNotify(value, idx) {
         return;
     }
 
-    const isTextNotification = data.length > 0 && data.every(byte => byte >= 0x20 && byte <= 0x7E);
-    if ((!isTextNotification && data.length === 14) || idx === 0) {
-        addLog(`收到配置：${bytes2hex(data)}`);
-        const epdpins = document.getElementById("epdpins");
-        const epddriver = document.getElementById("epddriver");
-        epdpins.value = bytes2hex(data.slice(0, 7));
-        if (data.length > 10) epdpins.value += bytes2hex(data.slice(10, 11));
-        currentPinsValue = epdpins.value.trim().toLowerCase();
-        epddriver.value = bytes2hex(data.slice(7, 8));
-        deviceDriverValue = bytes2hex(data.slice(7, 8));   // 新增：保存驱动值
-        a0_fix = 0;
-        displayErrorActive = false;
-        updateDitcherOptions();
-    } else {
+    // ============================================================
+    // 4. PWM 查询响应（命令 0x40，固定长度 4）
+    // ============================================================
+    if (data.length === 4 && data[0] === 0x40) {
+        const mode = data[1];          // 0x01 = 自然风, 0x02 = 手动
+        const pulse = (data[2] << 8) | data[3];
+        
+        pwmProtocolVersion = 'legacy';
+        pwmScheme = 0x01;   // 强制脉宽
+
+        // 更新全局状态（保留原始协议值）
+        window.currentPwmMode = mode;
+        pwmControlFieldset.style.display = "";
+
+        // 更新滑条值（单位 ms）
+        const slider = document.getElementById('pulseSlider');
+        if (slider) {
+            slider.min = 900; slider.max = 2000; slider.step = 1;
+            slider.value = Math.min(Math.max(pulse, 900), 2000);
+        }
+
+        // 统一刷新 UI（按钮文字、禁用状态、脉宽显示）
+        updatePwmUI();
+        addLog(`📊 PWM(旧版): 模式=${mode===0x02?'手动':'自然风'}, 脉宽=${pulse}us`);
+    }
+    if (data.length === 5 && data[0] === 0x40) {
+        const mode = data[1];
+        const value = (data[2] << 8) | data[3];
+        const scheme = data[4];
+        
+        pwmProtocolVersion = 'new';
+
+        window.currentPwmMode = mode;
+        pwmScheme = scheme;
+        pwmControlFieldset.style.display = "";
+
+        const pulseSlider = document.getElementById('pulseSlider');
+        if (pulseSlider) {
+            // 先根据方案设置滑条范围，再设置值（裁剪到有效区间）
+            if (scheme === 0x01) {
+                pulseSlider.min = 900;
+                pulseSlider.max = 2000;
+                pulseSlider.step = 1;
+                let val = Math.min(Math.max(value, 900), 2000);
+                pulseSlider.value = val;
+            } else {
+                pulseSlider.min = 10;
+                pulseSlider.max = 100;
+                pulseSlider.step = 1;
+                let val = Math.min(Math.max(value, 10), 100);
+                pulseSlider.value = val;
+            }
+        }
+
+        // 刷新 UI（此时模式、方案、滑条值已同步）
+        updatePwmUI();
+
+        addLog(`📊 PWM状态: 方案=${scheme===0x01?'脉宽':'百分比'}, 模式=${mode===0x02?'手动':'自然风'}, 值=${value}${scheme===0x01?'us':'%'}`);
+        return;
+    }
+
+    // ============================================================
+    // 5. 尝试将数据解码为文本，并判断是否为已知的文本消息格式
+    // ============================================================
+    let text = null;
+    try {
+        text = new TextDecoder().decode(data);
+    } catch (_) {
+        // 解码失败，说明是纯二进制数据
+    }
+
+    const isKnownText = text && (
+        text.startsWith('slots=')  ||
+        text.startsWith('img=')    ||
+        text.startsWith('chunk=')  ||
+        text.startsWith('mtu=')    ||
+        text.startsWith('t=')      ||
+        text.startsWith('FID=')    ||
+        text.startsWith('display_error=') ||
+        text.startsWith('slot_error=') ||
+        text === 'ready=1'         ||
+        text.startsWith('pwm_mode=') ||
+        text.startsWith('font=')   ||
+        text.startsWith('flash_id=')   ||
+        text.startsWith('UNREG')   ||
+        text.startsWith('REG')   ||
+        text.startsWith('slot_stream=1')
+    );
+
+    // ============================================================
+    // 6. 文本消息处理
+    // ============================================================
+    if (isKnownText) {
         if (textDecoder == null) textDecoder = new TextDecoder();
         const msg = textDecoder.decode(data);
-        // ---- 自动识别驱动作者（仅首次） ----
+        addLog(msg, '⇓'); // 显示收到的文本消息
+
+        // 6.1 自动识别驱动作者（仅首次）
         if (!driverAuthorDetected) {
             let presetId = null;
             if (msg.includes('DONGSHAN')) {
@@ -2392,44 +2536,101 @@ function handleNotify(value, idx) {
                 addLog(`✅ 自动识别驱动作者: ${DRIVER_PRESETS.find(p => p.id === presetId).name} 设备ID:${deviceDriverValue}`);
             }
         }
-        if (!msg.startsWith('chunk=')) addLog(msg, '⇓');
+
+        // 6.2 处理图片槽位状态
         if (applySlotsMessage(msg)) {
             addLog('图片槽位状态已更新。');
-        } else if (msg === 'ready=1') {
+        }
+        // 6.3 屏幕刷新完成
+        else if (msg === 'ready=1') {
             completeImageRefresh();
             if (readyResolver) {
                 readyResolver();
                 readyResolver = null;
             }
-        } else if (beginSlotImageRead(msg)) {
+        }
+        // 6.4 开始接收槽位图片信息
+        else if (beginSlotImageRead(msg)) {
             addLog('开始接收槽位图片。');
-        } else if (beginSlotChunk(msg)) {
-            // The next notification contains the binary chunk.
-        } else if (msg.startsWith('display_error=')) {
+        }
+        // 6.5 开始接收槽位图片数据块（后续二进制数据由第1步处理）
+        else if (beginSlotChunk(msg)) {
+            // 仅记录，无需额外动作
+        }
+        // 6.6 显示错误
+        else if (msg.startsWith('display_error=')) {
             handleDisplayError(msg.substring('display_error='.length));
-        } else if (msg.startsWith('slot_error=')) {
+        }
+        // 6.7 槽位操作错误
+        else if (msg.startsWith('slot_error=')) {
             const errorMessage = `槽位操作失败：${msg.substring('slot_error='.length)}`;
             if (slotActionPending) setSlotActionPending(false);
             if (slotReadState) {
                 failSlotImageRead(errorMessage);
             } else {
                 const status = document.getElementById('slotReadStatus');
-                status.hidden = false;
-                status.textContent = errorMessage;
+                if (status) {
+                    status.hidden = false;
+                    status.textContent = errorMessage;
+                }
                 addLog(errorMessage);
             }
-        } else if (msg.startsWith('mtu=') && msg.length > 4) {
+        }
+        // 6.8 MTU 协商信息
+        else if (msg.startsWith('mtu=') && msg.length > 4) {
             const mtuParts = msg.substring(4).trim().split(/\s+/);
             const mtuSize = parseInt(mtuParts[0], 10);
             rleSupport = mtuParts.includes('rle=1');
             document.getElementById('mtusize').value = mtuSize;
             addLog(`MTU 已更新为: ${mtuSize}`);
             if (rleSupport) addLog('设备已启用 RLE 压缩传输。');
-        } else if (msg.startsWith('t=') && msg.length > 2) {
+        }
+        // 6.9 远端时间（用于调试）
+        else if (msg.startsWith('t=') && msg.length > 2) {
             const t = parseInt(msg.substring(2)) + new Date().getTimezoneOffset() * 60;
             addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
             addLog(`本地时间: ${new Date().toLocaleString()}`);
         }
+        // 其他已知文本消息可以在此扩展
+        // 注意：pwm_mode= 等消息如果固件以文本形式返回，可以在这里处理，但当前固件返回二进制，
+        // 所以该分支暂时不会进入，但保留以备后续扩展。
+
+        return; // 文本处理完毕
+    }
+
+    // ============================================================
+    // 7. 二进制配置包（非文本、非已知二进制，如引脚/驱动配置）
+    // ============================================================
+    // 尝试提取引脚配置（至少需要 7 个字节）
+    if (data.length >= 7) {
+        const epdpins = document.getElementById("epdpins");
+        const epddriver = document.getElementById("epddriver");
+        if (epdpins && epddriver) {
+            // 取前 7 个字节作为引脚配置
+            const pinsHex = bytes2hex(data.slice(0, 7));
+            // 驱动 ID 在第 8 个字节（索引 7）
+            const driverHex = (data.length > 7) ? bytes2hex(data.slice(7, 8)) : '';
+            if (pinsHex && driverHex) {
+                epdpins.value = pinsHex;
+                // 如果有第 11 个字节（索引 10），追加为 en_pin
+                if (data.length > 10) {
+                    epdpins.value += bytes2hex(data.slice(10, 11));
+                }
+                currentPinsValue = epdpins.value.trim().toLowerCase();
+                epddriver.value = driverHex;
+                deviceDriverValue = driverHex;   // 保存设备上报的驱动 ID
+                a0_fix = 0;                      // 重置特殊处理标志
+                displayErrorActive = false;      // 清除错误状态
+                updateDitcherOptions();          // 更新颜色模式和画布尺寸
+                addLog(`收到配置：${bytes2hex(data)}`);
+            } else {
+                // 未知二进制数据，仅记录十六进制（可取消注释用于调试）
+                // addLog(`收到二进制数据：${bytes2hex(data)}`);
+            }
+        }
+    } else {
+        // 长度不足 7 的未知二进制数据，可忽略或记录
+        // addLog(`收到未知数据：${bytes2hex(data)}`);
     }
 }
 
@@ -2696,6 +2897,11 @@ function convertDithering() {
     const contrast = parseFloat(document.getElementById('ditherContrast').value);
     if (!isNaN(contrast)) {
         imgData = adjustContrast(imgData, contrast);
+    }
+    // 新增：饱和度调整
+    const saturation = parseFloat(document.getElementById('ditherSaturation').value);
+    if (!isNaN(saturation) && saturation !== 1.0) {
+        imgData = boostSaturation(imgData, saturation);
     }
     //adjustContrast(imgData, contrast);
     // 4. 抖动处理
@@ -3382,6 +3588,7 @@ const DRIVER_PRESETS = [
                     <option value="0a" data-color="blackWhiteColor" data-size="7.5_880_528">7.5寸HD (黑白, SSD1677)</option>
                     <option value="0b" data-color="threeColor" data-size="7.5_880_528">7.5寸HD (三色, SSD1677)</option>
                     <option value="26" data-color="fourColor" data-size="9.7_960_680">9.7寸 (四色, CSOT970)</option>
+                    <option value="28" data-color="fourColor" data-size="9.7_960_680">9.7寸 (四色, 970外置LUT)</option>
         `
     },
     {
@@ -3612,6 +3819,142 @@ document.body.onload = () => {
     }
 };
 
+// 设置PWM模式（mode: 1=自然风, 2=手动）
+let pwmScheme = 0x01;        // 0x01=脉宽方案，0x02=百分比方案
+function setPwmScheme(scheme) {
+    if (!isBleConnected()) {
+        addLog("⚠️ 未连接，无法发送方案切换命令");
+        return;
+    }
+    const data = new Uint8Array([0x04, scheme]);   // 子命令0x04，参数scheme
+    write(EpdCmd.PWM_CONTROL, data, true).then(success => {
+        if (success) {
+            pwmScheme = scheme;
+            addLog(`✅ PWM方案切换为：${scheme === 0x01 ? '脉宽方案' : '百分比方案'}`);
+            updatePwmUI();
+            queryPwmStatus();   // 刷新状态
+        } else {
+            addLog("❌ 方案切换失败");
+        }
+    });
+}
+
+function setPwmMode(mode) {
+    if (!isBleConnected()) {
+        addLog("⚠️ 未连接，无法发送PWM控制命令");
+        return;
+    }
+    const data = new Uint8Array([mode]);   // 直接发送子命令 0x01 或 0x02
+    write(EpdCmd.PWM_CONTROL, data, true).then(success => {
+        if (success) {
+            addLog(`✅ PWM模式: ${mode === 0x02 ? '手动' : '自然风'}`);
+        } else {
+            addLog("❌ PWM模式设置失败");
+        }
+    });
+}
+
+// 设置脉宽（微秒）—— 子命令 0x03，无需修改
+function setPwmPulse(pulseUs) {
+    if (!isBleConnected()) {
+        addLog("⚠️ 未连接，无法发送PWM脉宽");
+        return;
+    }
+    const data = new Uint8Array([0x03, (pulseUs >> 8) & 0xFF, pulseUs & 0xFF]);
+    write(EpdCmd.PWM_CONTROL, data, true).then(success => {
+        if (success) {
+            // 发送成功后立即刷新 UI（此时滑块值已由事件更新）
+            updatePwmUI();
+            const unit = pwmScheme === 0x01 ? 'us' : '%';
+            addLog(`✅ 脉宽设置为 ${pulseUs}${unit}`);
+            // 可选：查询设备状态确认（但会覆盖本地值，若需同步可保留）
+            // setTimeout(queryPwmStatus, 300);
+        } else {
+            addLog("❌ 脉宽设置失败");
+        }
+    });
+}
+
+// 查询PWM状态 —— 子命令 0x05，无需修改
+async function queryPwmStatus() {
+    if (!isBleConnected()) {
+        addLog("⚠️ 未连接，无法查询PWM状态");
+        return;
+    }
+    const data = new Uint8Array([0x05]);
+    await write(EpdCmd.PWM_CONTROL, data, true).then(success => {
+        if (success) {
+            //addLog("✅ 已发送PWM状态查询命令");
+        } else {
+            addLog("❌ PWM状态查询发送失败");
+        }
+    });
+}
+
+function updatePwmUI() {
+    const isManual = (window.currentPwmMode === 0x02);
+    const modeToggle = document.getElementById('pwmModeToggle');
+    const modeLabel = document.getElementById('pwmModeLabel');
+    const pulseSlider = document.getElementById('pulseSlider');
+    const pulseDisplay = document.getElementById('pulseDisplay');
+    const pulseUnit = document.getElementById('pulseUnit');
+    const pulseDecBtn = document.getElementById('pulseDecBtn');
+    const pulseIncBtn = document.getElementById('pulseIncBtn');
+    const SchemeNew = document.getElementById('pwmSchemeNew');
+    const schemeToggle = document.getElementById('pwmSchemeToggle');
+    const schemeLabel = document.getElementById('pwmSchemeLabel');
+
+    // 1. 控制方案切换按钮和标签的可见性
+    if (pwmProtocolVersion === 'legacy') {
+        if (SchemeNew) SchemeNew.style.display = 'none';
+        if (schemeLabel) schemeLabel.style.display = 'none';
+        // 固定为脉宽单位
+        if (pulseUnit) pulseUnit.textContent = 'ms';
+    } else { // new
+        if (SchemeNew) SchemeNew.style.display = '';
+        if (schemeLabel) schemeLabel.style.display = '';
+        // 根据方案设置单位
+        const unit = pwmScheme === 0x01 ? 'ms' : '%';
+        if (pulseUnit) pulseUnit.textContent = unit;
+        if (schemeLabel) schemeLabel.textContent = pwmScheme === 0x01 ? '脉宽(µs)' : '占空比(%)';
+    }
+
+    // 2. 模式按钮文字
+    if (modeToggle) modeToggle.textContent = isManual ? '手动' : '自然风';
+    if (modeLabel) {
+        const schemeName = pwmProtocolVersion === 'legacy' ? '' : ` (${pwmScheme===0x01?'脉宽':'百分比'})`;
+        modeLabel.textContent = `当前模式：${isManual ? '手动' : '自然风'}${schemeName}`;
+    }
+
+    // 3. 滑条范围（已由响应处理时设置，但保险再设一次）
+    if (pulseSlider) {
+        if (pwmProtocolVersion === 'legacy' || pwmScheme === 0x01) {
+            pulseSlider.min = 900; pulseSlider.max = 2000; pulseSlider.step = 1;
+        } else {
+            pulseSlider.min = 10; pulseSlider.max = 100; pulseSlider.step = 1;
+        }
+        pulseSlider.disabled = !isManual;
+    }
+
+    // 4. 显示值
+    if (isManual) {
+        let val = parseInt(pulseSlider.value);
+        if (pwmProtocolVersion === 'legacy' || pwmScheme === 0x01) {
+            val = Math.min(Math.max(val, 900), 2000);
+            pulseDisplay.textContent = (val / 1000).toFixed(2);
+        } else {
+            val = Math.min(Math.max(val, 10), 100);
+            pulseDisplay.textContent = val;
+        }
+    } else {
+        pulseDisplay.textContent = '--';
+    }
+
+    // 5. 加减按钮状态
+    if (pulseDecBtn) pulseDecBtn.disabled = !isManual;
+    if (pulseIncBtn) pulseIncBtn.disabled = !isManual;
+}
+
 // 事件初始化（包含新增亮度滑块和同步时间按钮的监听）
 function initEventHandlers() {
     document.getElementById("ditherStrength").addEventListener("input", (e) => {
@@ -3629,6 +3972,16 @@ function initEventHandlers() {
         brightnessSlider.addEventListener('input', (e) => {
             ditherBrightness = parseFloat(e.target.value);
             brightnessValue.innerText = ditherBrightness.toFixed(1);
+            applyDither();
+        });
+    }
+    // 新增饱和度滑块
+    const saturationSlider = document.getElementById('ditherSaturation');
+    const saturationValue = document.getElementById('ditherSaturationValue');
+    if (saturationSlider && saturationValue) {
+        saturationSlider.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            saturationValue.innerText = val.toFixed(1);
             applyDither();
         });
     }
@@ -3696,6 +4049,79 @@ function initEventHandlers() {
     const syncBBtn = document.getElementById('syncToBBtn');
     if (syncABtn) syncABtn.addEventListener('click', () => syncCurrentCanvasToSide('A'));
     if (syncBBtn) syncBBtn.addEventListener('click', () => syncCurrentCanvasToSide('B'));
+    
+    // ----- PWM 风扇控制事件绑定 -----
+    const modeToggle = document.getElementById('pwmModeToggle');
+    const pulseSlider = document.getElementById('pulseSlider');
+    const pulseDecBtn = document.getElementById('pulseDecBtn');
+    const pulseIncBtn = document.getElementById('pulseIncBtn');
+    
+    if (modeToggle) {
+        window.currentPwmMode = 0x01; // 1=自然风, 2=手动，默认自然风
+        updatePwmUI();
+    
+        modeToggle.addEventListener('click', () => {
+            // 切换 1 ↔ 2
+            window.currentPwmMode = (window.currentPwmMode === 0x01) ? 0x02 : 0x01;
+            updatePwmUI();
+            setPwmMode(window.currentPwmMode);   // 发送模式（1或2）
+        });
+        
+        // **新增：实时更新显示（拖动过程）**
+        pulseSlider.addEventListener('input', () => {
+            if (window.currentPwmMode === 0x02) {
+                updatePwmUI();  // 仅刷新显示，不发送命令
+            }
+        });
+    
+        // PWM 滑条 change 事件
+        pulseSlider.addEventListener('change', () => {
+            if (window.currentPwmMode === 0x02) {
+                let val = parseInt(pulseSlider.value);
+                if (pwmScheme === 0x01) {
+                    // 脉宽方案：直接发送微秒
+                    setPwmPulse(val);
+                } else {
+                    // 百分比方案：发送百分比值（10~100）
+                    setPwmPulse(val);   // 函数内部会根据当前方案转换
+                }
+            }
+        });
+    
+        // 加减按钮事件（保持不变，但内部需传递当前值）
+        pulseDecBtn.addEventListener('click', () => {
+            if (window.currentPwmMode === 0x02) {
+                let val = parseInt(pulseSlider.value);
+                const step = pwmScheme === 0x01 ? 10 : 1;
+                val = Math.max(parseInt(pulseSlider.min), val - step);
+                pulseSlider.value = val;
+                // 触发 change 事件
+                pulseSlider.dispatchEvent(new Event('change'));
+            }
+        });
+        
+        pulseIncBtn.addEventListener('click', () => {
+            if (window.currentPwmMode === 0x02) {
+                let val = parseInt(pulseSlider.value);
+                const step = pwmScheme === 0x01 ? 10 : 1;
+                val = Math.min(parseInt(pulseSlider.max), val + step);
+                pulseSlider.value = val;
+                pulseSlider.dispatchEvent(new Event('change'));
+            }
+        });
+    }
+    const schemeToggle = document.getElementById('pwmSchemeToggle');
+    if (schemeToggle) {
+        schemeToggle.addEventListener('click', () => {
+            if (pwmProtocolVersion === 'legacy') {
+                //alert('当前设备固件不支持百分比方案切换。');
+                addLog('⚠️ 旧版固件不支持方案切换');
+                return;
+            }
+            const newScheme = (pwmScheme === 0x01) ? 0x02 : 0x01;
+            setPwmScheme(newScheme);
+        });
+    }
 }
 
 function checkDebugMode() {

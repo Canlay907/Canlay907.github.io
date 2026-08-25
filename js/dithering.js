@@ -17,6 +17,131 @@ const sevenColorPalette = [
   { name: "黄色", r: 255, g: 255, b: 0, value: 0x05 },
   { name: "橙色", r: 255, g: 128, b: 0, value: 0x06 }
 ];
+
+// ==================== 七色色域映射与中性色检测（ACeP 专用） ====================
+// 这些参数用于改进七色屏的色彩还原，避免偏色
+const sevenColorNeutralChroma = 14;
+const sevenColorCoolNeutralChroma = 22;
+const sevenColorGamutMappingStrength = 0.7;
+
+// 从理想色板中提取彩色（除黑、白外）并计算色相和亮度
+const sevenColorChromaticPalette = (() => {
+    // 使用你已有的 sevenColorPalette（理想色）
+    const colors = sevenColorPalette.slice(2).map(color => ({
+        color,
+        hue: getSevenColorHue(color.r, color.g, color.b),
+        luminance: getSevenColorLuminance(color.r, color.g, color.b)
+    }));
+    // 按色相排序，用于插值
+    return colors.sort((a, b) => a.hue - b.hue);
+})();
+
+/**
+ * 计算 sRGB 颜色的亮度（Y 分量）
+ */
+function getSevenColorLuminance(r, g, b) {
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/**
+ * 计算 sRGB 颜色的色相（0~360°）
+ */
+function getSevenColorHue(r, g, b) {
+    r /= 255;
+    g /= 255;
+    b /= 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
+    if (delta === 0) return 0;
+    let hue;
+    if (max === r) hue = 60 * (((g - b) / delta) % 6);
+    else if (max === g) hue = 60 * ((b - r) / delta + 2);
+    else hue = 60 * ((r - g) / delta + 4);
+    return hue < 0 ? hue + 360 : hue;
+}
+
+/**
+ * 判断颜色是否为中性色（接近灰阶）
+ */
+function isSevenColorNeutral(r, g, b) {
+    const lab = rgbToLabRed(r, g, b);
+    const chroma = Math.sqrt(lab.a * lab.a + lab.b * lab.b);
+    // 低彩度直接判为中性
+    if (chroma <= sevenColorNeutralChroma) return true;
+    // 高亮度且偏蓝的冷中性（如天空、冷灰）
+    const hue = getSevenColorHue(r, g, b);
+    return lab.l >= 45 && chroma <= sevenColorCoolNeutralChroma && hue >= 175 && hue <= 230;
+}
+
+/**
+ * 查找目标色相在彩色调色板中的左右邻居
+ */
+function findSevenColorHueNeighbors(targetHue) {
+    for (let i = 0; i < sevenColorChromaticPalette.length; i++) {
+        const left = sevenColorChromaticPalette[i];
+        const right = sevenColorChromaticPalette[(i + 1) % sevenColorChromaticPalette.length];
+        const span = (right.hue - left.hue + 360) % 360;
+        const offset = (targetHue - left.hue + 360) % 360;
+        if (offset <= span) {
+            return {
+                left,
+                right,
+                position: span === 0 ? 0 : offset / span
+            };
+        }
+    }
+    // fallback
+    return {
+        left: sevenColorChromaticPalette[0],
+        right: sevenColorChromaticPalette[0],
+        position: 0
+    };
+}
+
+/**
+ * 将颜色映射到设备可显示的色域（基于目标色相和亮度）
+ * @param {number} r,g,b      待映射颜色的 RGB（0-255）
+ * @param {number} sourceR,sourceG,sourceB  原始颜色（用于判断中性，可与 r,g,b 相同）
+ * @returns {{r,g,b}} 映射后的 RGB
+ */
+function mapSevenColorToDeviceGamut(r, g, b, sourceR, sourceG, sourceB) {
+    // 中性色不做映射（直接返回原值）
+    if (isSevenColorNeutral(sourceR, sourceG, sourceB)) {
+        return { r, g, b };
+    }
+
+    const neighbors = findSevenColorHueNeighbors(getSevenColorHue(sourceR, sourceG, sourceB));
+    // 使用 Hermite 平滑插值
+    const pos = neighbors.position * neighbors.position * (3 - 2 * neighbors.position);
+    const inv = 1 - pos;
+
+    // 插值基色（两个相邻彩色色的混合）
+    const baseR = neighbors.left.color.r * inv + neighbors.right.color.r * pos;
+    const baseG = neighbors.left.color.g * inv + neighbors.right.color.g * pos;
+    const baseB = neighbors.left.color.b * inv + neighbors.right.color.b * pos;
+    const baseLum = neighbors.left.luminance * inv + neighbors.right.luminance * pos;
+
+    // 目标亮度
+    const targetLum = getSevenColorLuminance(r, g, b);
+
+    // 选择中性参考点（黑或白）
+    const neutral = targetLum >= baseLum ? sevenColorPalette[1] : sevenColorPalette[0]; // 白或黑
+    const neutralLum = getSevenColorLuminance(neutral.r, neutral.g, neutral.b);
+
+    // 计算插值比例（将亮度映射到基色与中性色之间）
+    const range = neutralLum - baseLum;
+    const amount = Math.abs(range) > 0.001
+        ? Math.min(1, Math.max(0, (targetLum - baseLum) / range))
+        : 0;
+
+    return {
+        r: baseR + (neutral.r - baseR) * amount,
+        g: baseG + (neutral.g - baseG) * amount,
+        b: baseB + (neutral.b - baseB) * amount
+    };
+}
+
 // 标准六色调色板（用于算法内部颜色匹配）
 // 固定的六色调色板
 /*
@@ -1973,6 +2098,26 @@ function ditherImage(imageData, alg, strength, colorMode) {
       }
     }
     
+    // ===== 🆕 七色色域映射预处理 =====
+    if (colorMode === 'sevenColor' && document.getElementById('useSevenYouHua').checked) {
+        const data = imageData.data;
+        // 复制原始数据，因为映射需要基于原始 RGB
+        const srcData = new Uint8ClampedArray(data);
+        for (let i = 0; i < data.length; i += 4) {
+            const r = srcData[i];
+            const g = srcData[i + 1];
+            const b = srcData[i + 2];
+            // 只对非中性色进行映射
+            if (!isSevenColorNeutral(r, g, b)) {
+                const mapped = mapSevenColorToDeviceGamut(r, g, b, r, g, b);
+                data[i]     = Math.round(mapped.r);
+                data[i + 1] = Math.round(mapped.g);
+                data[i + 2] = Math.round(mapped.b);
+            }
+            // 中性色保留原值（抖动算法会继续处理）
+        }
+    }
+    
     // 根据算法选择
     switch (alg) {
         case "floydSteinberg": return floydSteinbergDither(imageData, strength, colorMode);
@@ -1994,16 +2139,19 @@ function ditherImage(imageData, alg, strength, colorMode) {
 }
 
 
+// ==================== 六色辅助函数（基于 rgbPalette） ====================
+
 /**
- * 从经过抖动处理后的 ImageData 中提取每个像素的六色索引
- * @param {ImageData} imageData 抖动后的图像数据（每个像素 RGB 已量化到六色）
- * @param {Array} palette 六色调色板对象数组（带 value 字段）
+ * 从图像数据中提取每个像素的六色索引（基于 rgbPalette）
+ * @param {ImageData} imageData 画布图像数据
+ * @param {Array} palette rgbPalette 数组
  * @returns {Uint8Array} 每个像素一个字节的索引数组（0-5）
  */
 function extractSixColorIndex(imageData, palette) {
     const data = imageData.data;
     const total = imageData.width * imageData.height;
     const indexArray = new Uint8Array(total);
+    
     // 构建快速查找表：RGB -> 索引
     const lookup = new Map();
     for (let i = 0; i < palette.length; i++) {
@@ -2011,19 +2159,20 @@ function extractSixColorIndex(imageData, palette) {
         const key = `${c.r},${c.g},${c.b}`;
         lookup.set(key, i);
     }
+    
     for (let i = 0; i < total; i++) {
-        const r = data[i*4];
-        const g = data[i*4+1];
-        const b = data[i*4+2];
+        const r = data[i * 4];
+        const g = data[i * 4 + 1];
+        const b = data[i * 4 + 2];
         const key = `${r},${g},${b}`;
         let idx = lookup.get(key);
         if (idx === undefined) {
-            // 回退：查找最接近的颜色（理论上抖动后应该精确匹配）
+            // 回退：查找最接近的颜色
             let best = 0, bestDist = Infinity;
             for (let j = 0; j < palette.length; j++) {
                 const c = palette[j];
                 const dr = r - c.r, dg = g - c.g, db = b - c.b;
-                const dist = dr*dr + dg*dg + db*db;
+                const dist = dr * dr + dg * dg + db * db;
                 if (dist < bestDist) {
                     bestDist = dist;
                     best = j;
@@ -2035,51 +2184,83 @@ function extractSixColorIndex(imageData, palette) {
     }
     return indexArray;
 }
+
 /**
- * 将六色索引数组打包为 E6 所需的 4bit 格式（每字节两个像素）
- * @param {Uint8Array} indexArray 每个像素一个字节，值 0-5
- * @param {number} width
- * @param {number} height
- * @returns {Uint8Array} 打包后的数据，长度为 ceil(width*height/2)
+ * 将六色索引数组打包为 4bit 格式（每字节两个像素）
  */
 function packSixColorTo4bit(indexArray, width, height) {
     const total = width * height;
     const packed = new Uint8Array(Math.ceil(total / 2));
     for (let i = 0; i < total; i += 2) {
         const high = indexArray[i] & 0x0F;
-        const low = (i+1 < total) ? (indexArray[i+1] & 0x0F) : 0;
+        const low = (i + 1 < total) ? (indexArray[i + 1] & 0x0F) : 0;
         packed[i >> 1] = (high << 4) | low;
     }
     return packed;
 }
+
 /**
- * 六色索引转驱动波形2bit码，匹配固件color_map / color_map1
- * @param colorArray 上位0黄1绿2蓝3红4黑5白索引数组
- * @param width
- * @param height
- * @param firstStage true=第一阶段color_map, false=第二阶段color_map1
- * @returns Uint8Array 每字节4像素(2bit/像素)
+ * 将六色索引数组转换为 E6 波形两阶段数据
  */
 function mapSixColorToWaveform(colorArray, width, height, firstStage) {
-  // 上位下标 → 硬件4bit色号
-  //const hwCode = [2, 6, 5, 3, 0, 1];
-  // 固件两段映射表，严格复制驱动C代码
-  const color_map = [1, 1, 2, 3, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-  const color_map1 = [0, 1, 1, 3, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-  const table = firstStage ? color_map : color_map1;
+    // 映射表（固件驱动中的表）
+    const color_map = [1, 1, 2, 3, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+    const color_map1 = [0, 1, 1, 3, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+    const table = firstStage ? color_map : color_map1;
 
-  const total = width * height;
-  const out_bytes = new Uint8Array(total / 4);
-  for (i = 0; i < total; i++) {
-    const c1 = table[colorArray[i]];
-    const c2 = table[colorArray[i += 1]];
-    const c3 = table[colorArray[i += 1]];
-    const c4 = table[colorArray[i += 1]];
-    const output = (c1 << 6) | (c2 << 4) | (c3 << 2) | c4;
-    out_bytes[i >> 2] = output;
+    const total = width * height;
+    const out_bytes = new Uint8Array(Math.ceil(total / 4));
+    let outIdx = 0;
+    for (let i = 0; i < total; i += 4) {
+        const c1 = table[colorArray[i] !== undefined ? colorArray[i] : 0];
+        const c2 = table[colorArray[i + 1] !== undefined ? colorArray[i + 1] : 0];
+        const c3 = table[colorArray[i + 2] !== undefined ? colorArray[i + 2] : 0];
+        const c4 = table[colorArray[i + 3] !== undefined ? colorArray[i + 3] : 0];
+        out_bytes[outIdx++] = (c1 << 6) | (c2 << 4) | (c3 << 2) | c4;
+    }
+    return out_bytes;
+}
 
-  }
-  return out_bytes;
+/**
+ * 解码 E6 六色屏双帧波形数据为 ImageData
+ * @param {Uint8Array} firstData - 第一帧波形数据（每字节4个2bit像素）
+ * @param {Uint8Array} secondData - 第二帧波形数据
+ * @param {number} width - 图像宽度
+ * @param {number} height - 图像高度
+ * @returns {ImageData}
+ */
+function decodeSixColorFromDualFrames(firstData, secondData, width, height) {
+    const totalPixels = width * height;
+    const imageData = new ImageData(width, height);
+
+    // 波形组合 (a, b) -> rgbPalette 索引
+    // 使用方括号 [] 让表达式作为计算属性名
+    const keyToRgbIdx = {
+        [(1 << 2) | 0]: 4, // 黑 (a=1, b=0) → rgbPalette[4] 黑色
+        [(1 << 2) | 1]: 5, // 白 (a=1, b=1) → rgbPalette[5] 白色
+        [(2 << 2) | 1]: 0, // 黄 (a=2, b=1) → rgbPalette[0] 黄色
+        [(3 << 2) | 3]: 3, // 红 (a=3, b=3) → rgbPalette[3] 红色
+        [(1 << 2) | 2]: 2, // 蓝 (a=1, b=2) → rgbPalette[2] 蓝色
+        [(0 << 2) | 1]: 1  // 绿 (a=0, b=1) → rgbPalette[1] 绿色
+    };
+    const defaultRgbIdx = 5; // 若未匹配，默认白色
+
+    for (let i = 0; i < totalPixels; i++) {
+        const byteIdx = i >> 2;
+        const shift = 6 - ((i & 0x03) * 2);
+        const a = (firstData[byteIdx] >> shift) & 0x03;
+        const b = (secondData[byteIdx] >> shift) & 0x03;
+        const key = (a << 2) | b;
+        let rgbIdx = keyToRgbIdx[key];
+        if (rgbIdx === undefined) rgbIdx = defaultRgbIdx;
+        const color = rgbPalette[rgbIdx];
+        const pixel = i * 4;
+        imageData.data[pixel]     = color.r;
+        imageData.data[pixel + 1] = color.g;
+        imageData.data[pixel + 2] = color.b;
+        imageData.data[pixel + 3] = 255;
+    }
+    return imageData;
 }
 
 function decodeProcessedData(processedData, width, height, mode) {

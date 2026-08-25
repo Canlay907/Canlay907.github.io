@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>墨水屏日历-0812</title>
+    <title>墨水屏日历</title>
     <link rel="shortcut icon" type="image/png" href="favicon.png">
     <link rel="stylesheet" href="css/main.css?v=20251109">
 </head>
@@ -41,7 +41,7 @@
         <div class="log-container" id="log"></div>
     </fieldset>
     <!-- 新增：APP模式切换与A/B面选择 -->
-    <fieldset id="appModeFieldset">
+    <fieldset id="appModeFieldset" style="display:none;">
         <legend>设备模式</legend>
         <div class="flex-container">
             <div class="flex-group">
@@ -58,8 +58,10 @@
                 </select>
             </div>
             <div class="flex-group" id="compressOptionGroup" style="display: none;">
-                <label for="compressEnable">启用LZ77压缩</label>
-                <input type="checkbox" id="compressEnable" checked>
+                <label for="compressEnable"><input type="checkbox" id="compressEnable" checked>启用LZ77压缩</label>
+                <label>
+                    <input type="checkbox" id="useSevenYouHua" onclick="applyDither()"> 7色取值优化算法
+                </label>
             </div>
         </div>
         <div id="doubleImagePanel" style="display: none; margin-top: 10px;">
@@ -71,6 +73,27 @@
                     <span style="margin-left: 12px;">A面状态: <span id="aStatusLabel">未设置</span></span>
                     <span style="margin-left: 8px;">B面状态: <span id="bStatusLabel">未设置</span></span>
                 </div>
+            </div>
+        </div>
+    </fieldset>
+    
+    <fieldset id="pwmControlFieldset"  style="display:none;">
+        <legend>风扇控制</legend>
+        <div class="flex-container">
+            <div class="flex-group">
+                <button id="pwmModeToggle" type="button" class="primary">自然风</button>
+                <span id="pwmModeLabel">当前模式：自然风</span>
+            </div>
+            <div class="flex-group">
+                <label>脉宽：<span id="pulseDisplay">1.20</span> <span id="pulseUnit">ms</span></label>
+                <input type="range" id="pulseSlider" min="900" max="2000" value="1200" step="1" disabled>
+                <button id="pulseDecBtn" type="button" class="secondary" disabled>-</button>
+                <button id="pulseIncBtn" type="button" class="secondary" disabled>+</button>
+            </div>
+            <div  id="pwmSchemeNew"  class="flex-group">
+                <label>方案：</label>
+                <button id="pwmSchemeToggle" type="button" class="secondary">切换方案</button>
+                <span id="pwmSchemeLabel">脉宽(µs)</span>
             </div>
         </div>
     </fieldset>
@@ -151,7 +174,7 @@
         </div>
     </fieldset>
     
-    <fieldset id="slot-panel">
+    <fieldset id="slot-panel"  style="display:none;">
 			<legend>图片槽位</legend>
 			<div class="slot-toolbar">
 				<div>
@@ -318,6 +341,12 @@
                         <label for="ditherBrightness">亮度:</label>
                         <input type="range" min="0.5" max="1.5" step="0.1" value="1.0" id="ditherBrightness">
                         <label id="ditherBrightnessValue">1.0</label>
+                    </div>
+                    <!-- 新增饱和度滑块组 -->
+                    <div class="flex-group">
+                        <label for="ditherSaturation">饱和度:</label>
+                        <input type="range" min="0.5" max="2.0" step="0.1" value="1.0" id="ditherSaturation">
+                        <label id="ditherSaturationValue">1.0</label>
                     </div>
                 </div>
                 <div class="flex-container canvas-tools">
