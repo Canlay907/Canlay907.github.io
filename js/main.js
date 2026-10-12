@@ -72,7 +72,9 @@ const canvasSizes = [
     { name: '2.9_384_168', width: 384, height: 168 },
     { name: '3.1_300_300', width: 304, height: 304 },
     { name: '3.5_384_184', width: 384, height: 184 },
+    { name: '3.64_760_568', width: 760, height: 568 },//3.64寸E6
     { name: '3.68_792_528', width: 792, height: 528 },//3.68寸E6
+    { name: '3.7_720_480', width: 720, height: 480 },//3.7E6鱼鹰屏
     { name: '3.7_240_416', width: 240, height: 416 },//3.7寸 第一代AI智屏壳
     { name: '3.7_416_240', width: 416, height: 240 },
     { name: '3.97_800_480', width: 800, height: 480 },
@@ -124,7 +126,7 @@ let slotActionPending = false;         // 槽位操作（显示/删除等）进�
 let slotActionTimer = null;            // 🆕 槽位操作超时定时器
 let slotReadTimer = null;
 let slotEraseAllPending = false;
-let ditherSourceImageData = null;
+let ditherSourceImageData = null;  // 用于缓存抖动前的原始图像数据
 
 const MAX_SLOT_IMAGE_SIZE = 1024 * 1024;
 const DEFAULT_SLOT_READ_RAW_CHUNK_SIZE = 256;
@@ -607,6 +609,7 @@ async function write(cmd, data, withResponse = true) {
     }
 }
 
+var a0_fix = 0;
 // ==================== 图像传输（支持CRC模式）====================
 async function writeImage(data, step = 'bw') {
     const configuredMtu = parseInt(document.getElementById('mtusize').value, 10);
@@ -638,7 +641,78 @@ async function writeImage(data, step = 'bw') {
     }
 }
 
-var a0_fix = 0;
+
+//TSL0922专用图传函数，兼容DA14585
+async function TSLwrite(cmd, data, withResponse = true) {
+    while (writeInProgress) await sleep(10);
+    if (!epdCharacteristic) {
+        addLog("服务不可用，请检查蓝牙连接");
+        return false;
+    }
+    writeInProgress = true;
+    try {
+        const payload = [cmd];
+        if (data) {
+            if (typeof data === 'string') data = hex2bytes(data);
+            if (data instanceof Uint8Array) data = Array.from(data);
+            payload.push(...data);
+        }
+        addLog(bytes2hex(payload), '⇑');
+        const dataBuffer = Uint8Array.from(payload);
+        
+        // ==============================================
+        // 🔥 核心兼容写法：自动适配所有浏览器/设备
+        // ==============================================
+        if (withResponse) {
+            // 带响应写入（兼容新老API）
+            if (epdCharacteristic.writeValueWithResponse) {
+                await epdCharacteristic.writeValueWithResponse(dataBuffer);
+            } else {
+                await epdCharacteristic.writeValue(dataBuffer);
+            }
+        } else {
+            // 不带响应写入（兼容新老API）
+            if (epdCharacteristic.writeValueWithoutResponse) {
+                await epdCharacteristic.writeValueWithoutResponse(dataBuffer);
+            } else {
+                await epdCharacteristic.writeValue(dataBuffer);
+            }
+        }
+        await sleep(50);
+        return true;
+    } catch (e) {
+        console.error(e);
+        if (e.message) addLog("write: " + e.message);
+        return false;
+    } finally {
+        writeInProgress = false;
+    }
+}
+
+async function TSLwriteImage(data, step = 'bw') {
+    const mtu = parseInt(document.getElementById('mtusize').value) - 2;
+    const interleavedCount = parseInt(document.getElementById('interleavedcount').value);
+    const count = Math.round(data.length / mtu);
+    let chunkIdx = 0;
+    let noReplyCount = interleavedCount;
+    for (let i = 0; i < data.length; i += mtu) {
+        const currentTime = (Date.now() - startTime) / 1000.0;
+        setStatus(`${step === 'bw' ? '黑白' : '颜色'}块: ${chunkIdx + 1}/${count + 1}, 总用时: ${currentTime}s`);
+        const payload = [
+            (step === 'bw' ? 0x0F : 0x00) | (i === 0 ? 0x00 : 0xF0),
+            ...data.slice(i, i + mtu)
+        ];
+        if (noReplyCount > 0) {
+            await TSLwrite(EpdCmd.WRITE_IMG, payload, false);
+            noReplyCount--;
+        } else {
+            await TSLwrite(EpdCmd.WRITE_IMG, payload, true);
+            noReplyCount = interleavedCount;
+        }
+        chunkIdx++;
+    }
+}
+
 let driverAuthorDetected = false;    // 是否已识别驱动作者
 let deviceDriverValue = null;    // 存储设备上报的驱动值（如 "06"）
 // 使用CRC校验传输（如果固件支持）
@@ -648,7 +722,6 @@ async function writeImageCRC(data, step = 'bw') {
         const epdDriverSelect = document.getElementById('epddriver');
         const epdDriverPreset = document.getElementById('driverPreset');
         addLog(`驱动预设: ${epdDriverPreset.value}  驱动ID:${epdDriverSelect.value}`);
-        if(epdDriverPreset.value == "tsl0922" && epdDriverSelect.value == "13" && a0_fix != 1) data = JD79660JiaoCuoYuChuLi(data);
         await BleTransfer.sendImageWithResume(data, step, (sent, total, speedInfo) => {
             if (speedInfo) {
                 setStatus(`${stepName}块(CRC): ${sent}/${total}, ${BleTransfer.getSpeedString()}, ${speedInfo.elapsed}s`);
@@ -660,7 +733,7 @@ async function writeImageCRC(data, step = 'bw') {
     } catch (e) {
         console.error('CRC transfer failed:', e);
         addLog(`CRC传输失败: ${e.message}，回退到普通传输`);
-        await writeImage(data, step);
+        await TSLwriteImage(data, step);
         return true;
     }
 }
@@ -816,7 +889,7 @@ function applySlotsMessage(message) {
         fingerprintStart = 3;
     }
     const slotvalue = document.getElementById("slot-panel");
-    if(count > 0) slotvalue.style.display = "";
+    if(count > 0 || countMatch) slotvalue.style.display = "";
     
     // 2. 检查是否包含 size= 字段（新固件）
     if (parts.length > fingerprintStart && parts[fingerprintStart].startsWith('size=')) {
@@ -1706,7 +1779,7 @@ async function sendimg(options = {}) {
     await write(EpdCmd.INIT);
 
     const useCRC = false;//(appVersion >= 0x20) && typeof BleTransfer !== 'undefined';
-    const transferFn = useCRC ? writeImageCRC : writeImage;
+    const transferFn = (document.getElementById("driverPreset").value === 'tsl0922')?TSLwriteImage:writeImage;//useCRC ? writeImageCRC : writeImage;
     if (useCRC) addLog("使用CRC校验传输模式");
 
     // ========== 六色双刷逻辑 ==========
@@ -1724,7 +1797,7 @@ async function sendimg(options = {}) {
         }
     
         // 特殊屏：3.98寸 / 3.68寸
-        if ((canvas.width == 768 || canvas.width == 552) || (canvas.width == 792 || canvas.width == 528)) {
+        if ((canvas.width == 768 || canvas.width == 552) || (canvas.width == 792 || canvas.width == 528) || (canvas.width == 760 || canvas.width == 568) || (canvas.width == 720 || canvas.width == 480)) {
             const firstData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, true);
             const secondData = mapSixColorToWaveform(mappedArray, canvas.width, canvas.height, false);
             
@@ -1799,7 +1872,10 @@ async function sendimg(options = {}) {
         setTimeout(() => { statusEl.parentElement.style.display = "none"; }, 5000);
         return;
     } else if (ditherMode === 'fourColor') {
-        await transferFn(processedData, 'color');
+        const epdDriverPreset = document.getElementById('driverPreset');
+        let imgA0;
+        if(epdDriverPreset.value == "tsl0922" && epdDriverSelect.value == "13" && a0_fix != 1) imgA0 = JD79660JiaoCuoYuChuLi(processedData);else imgA0 = processedData;
+        await transferFn(imgA0, 'color');
     } else if (ditherMode === 'threeColor') {
         const half = Math.floor(processedData.length / 2);
         const bwData = processedData.slice(0, half);
@@ -1854,7 +1930,7 @@ async function sendimg(options = {}) {
         updateButtonStatus();
         return;
     }
-    await write(EpdCmd.REFRESH);
+    //await write(EpdCmd.REFRESH);
     updateButtonStatus();
 
     const elapsed = (Date.now() - startTime) / 1000;
@@ -2509,6 +2585,13 @@ function handleNotify(value, idx) {
         text.startsWith('flash_id=')   ||
         text.startsWith('UNREG')   ||
         text.startsWith('REG')   ||
+        text.startsWith('a0_fix=1')   ||
+        text.startsWith('rle=')   ||
+        text.startsWith('bat=')   ||
+        text.startsWith('sid=')   ||
+        text.startsWith('clock_enable=')   ||
+        text.startsWith('nrf_dfu=')   ||
+        text.startsWith('err=')   ||
         text.startsWith('slot_stream=1')
     );
 
@@ -2527,7 +2610,7 @@ function handleNotify(value, idx) {
                 presetId = 'dongshan';
             } else if (msg.includes('GUOWANGYANYU')) {
                 presetId = 'GuoWangYanYu';
-            } else if (msg.includes('REG') || msg.includes('REGISTERED')) {
+            } else if (msg.includes('REG') || msg.includes('REGISTERED') || msg.includes('sid=')) {
                 presetId = 'tsl0922';
             }
             if (presetId) {
@@ -2548,6 +2631,9 @@ function handleNotify(value, idx) {
                 readyResolver();
                 readyResolver = null;
             }
+        }
+        else if (msg === 'a0_fix=1') {
+            a0_fix=1;
         }
         // 6.4 开始接收槽位图片信息
         else if (beginSlotImageRead(msg)) {
@@ -2602,7 +2688,7 @@ function handleNotify(value, idx) {
     // 7. 二进制配置包（非文本、非已知二进制，如引脚/驱动配置）
     // ============================================================
     // 尝试提取引脚配置（至少需要 7 个字节）
-    if (data.length >= 7) {
+    if (data.length >= 14 || idx === 0) {
         const epdpins = document.getElementById("epdpins");
         const epddriver = document.getElementById("epddriver");
         if (epdpins && epddriver) {
@@ -3561,6 +3647,7 @@ const DRIVER_PRESETS = [
                     <option value="1b" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, SSD1680)</option>
                     <option value="20" data-color="blackWhiteColor" data-size="2.9_128_296">2.9寸 (黑白, UC8151D)</option>
                     <option value="10" data-color="fourColor" data-size="3.1_300_300">3.1寸 (四色, JD79665)</option>
+                    <option value="2a" data-color="sixColor" data-size="3.64_760_568">3.64寸 (六色E6, 760x568)</option>
                     <option value="27" data-color="sixColor" data-size="3.68_792_528">3.68寸 (六色, 高分E6)</option>
                     <option value="18" data-color="threeColor" data-size="3.7_416_240">3.7寸 (三色, AI智屏壳)</option>
                     <option value="1c" data-color="fourColor" data-size="3.97_800_480">3.97寸 (四色, 方角四色屏)</option>
@@ -3579,7 +3666,6 @@ const DRIVER_PRESETS = [
                     <option value="0d" data-color="fourColor" data-size="5.83_648_480">5.83寸 (四色, JD79665)</option>
                     <option value="25" data-color="fourColor" data-size="7.3E6_800_480">7.3寸 (四色, JD79665-A1)</option>
                     <option value="FF" data-color="sevenColor" data-size="7.3E6_800_480">7.3寸 (七色, Spectra 6)</option>
-                    <option value="2b" data-color="threeColor" data-size="7.4_800_480">7.4寸 (三色, SES7.4_GU140)</option>
                     <option value="06" data-color="blackWhiteColor" data-size="7.5_800_480">7.5寸 (黑白, UC8179)</option>
                     <option value="07" data-color="threeColor" data-size="7.5_800_480">7.5寸 (三色, UC8179)</option>
                     <option value="0c" data-color="fourColor" data-size="7.5_800_480">7.5寸 (四色, JD79665)</option>
@@ -3884,9 +3970,9 @@ async function queryPwmStatus() {
     const data = new Uint8Array([0x05]);
     await write(EpdCmd.PWM_CONTROL, data, true).then(success => {
         if (success) {
-            //addLog("✅ 已发送PWM状态查询命令");
+            console.log("✅ 已发送PWM状态查询命令");
         } else {
-            addLog("❌ PWM状态查询发送失败");
+            console.log("❌ PWM状态查询发送失败");
         }
     });
 }
