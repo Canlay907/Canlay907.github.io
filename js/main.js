@@ -128,6 +128,12 @@ let slotReadTimer = null;
 let slotEraseAllPending = false;
 let ditherSourceImageData = null;  // 用于缓存抖动前的原始图像数据
 
+let _lastProcessedCanvasHash = -1; // 上一次处理完写回画布的 FNV-1a hash
+
+// ==================== 上传数组/槽位下载相关缓存 ====================
+let uploadedProcessedData = null;   // 上传的原始数组缓存 {data,width,height,mode,canvasHash}
+let slotRawDataCache = new Map();   // 槽位原始数据内存缓存：slot -> {data,width,height,colorId,size}
+
 const MAX_SLOT_IMAGE_SIZE = 1024 * 1024;
 const DEFAULT_SLOT_READ_RAW_CHUNK_SIZE = 256;
 const SLOT_READ_TIMEOUT_MS = 5000;
@@ -188,6 +194,10 @@ function resetVariables() {
     slotActionPending = false;
     slotEraseAllPending = false;
     displayErrorActive = false;
+    
+    uploadedProcessedData = null;
+    slotRawDataCache = new Map();
+    
     if (slotActionTimer != null) clearTimeout(slotActionTimer);
     slotActionTimer = null;
     renderSlotGrid();
@@ -1044,8 +1054,18 @@ function renderSlotGrid(forceDisabled = imageTransferActive || slotActionPending
         freeButton.textContent = '删除';
         freeButton.disabled = forceDisabled || !used;
         freeButton.addEventListener('click', () => freeImageSlot(slot));
+        
+        const downloadButton = document.createElement('button');
+        downloadButton.type = 'button';
+        downloadButton.className = 'secondary';
+        downloadButton.textContent = '下载';
+        downloadButton.title = '读取槽位数据并下载为数组文件';
+        downloadButton.disabled = forceDisabled || !used;
+        downloadButton.addEventListener('click', () => downloadImageSlot(slot));
 
-        actions.append(saveButton, displayButton, readControl, freeButton);
+        actions.append(saveButton, displayButton, readControl, downloadButton, freeButton);
+
+        //actions.append(saveButton, displayButton, readControl, freeButton);//old
         item.append(label, actions);
         grid.appendChild(item);
     }
@@ -1318,6 +1338,15 @@ function finishSlotImageRead() {
     try {
         const mode = meta.colorId === 2 ? 'blackWhiteColor' : meta.colorId === 3 ? 'threeColor' : meta.colorId === 4 ? 'fourColor' : meta.colorId === 6 ? 'sixColor' : 'sevenColor';
         const normalized = normalizeSlotImageData(meta);
+        
+        // 保存归一化后的原始数据供后续下载使用
+        slotRawDataCache.set(meta.slot, {
+            data: normalized,
+            width: meta.width,
+            height: meta.height,
+            colorId: meta.colorId,
+            size: meta.size
+        });
         const driverValue = document.getElementById('epddriver').value.toLowerCase();
         let imageData;
         if (meta.colorId === 6) {
@@ -1351,6 +1380,11 @@ function finishSlotImageRead() {
         status.hidden = false;
         status.textContent = `槽位 ${meta.slot + 1} 读取完成，悬停“读取”按钮即可预览。耗时 ${elapsed}s。`;
         addLog(`槽位 ${meta.slot + 1} 图片已缓存，耗时: ${elapsed}s。`);
+        // 若是下载模式，触发下载
+        if (meta.downloadAfterRead) {
+            const cached = slotRawDataCache.get(meta.slot);
+            if (cached) triggerSlotDataDownload(meta.slot, cached);
+        }
     } catch (error) {
         console.error(error);
         const status = document.getElementById('slotReadStatus');
@@ -1409,6 +1443,103 @@ async function requestSlotImageInfo(state) {
         }
     }
 }
+
+
+
+// 计算画布像素的 FNV-1a 哈希（用于判断画布是否被修改过）
+function computeCanvasHash() {
+    try {
+        if (!canvas || !ctx) return -1;
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let hash = 2166136261;
+        for (let i = 0; i < data.length; i++) {
+            hash ^= data[i];
+            hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+    } catch (e) {
+        return -1;
+    }
+}
+
+// 把 processedData 打包成 .h 数组文件内容（downloadDataArray / 槽位下载共用）
+function buildDataArrayContent(processedData, width, height, mode) {
+    const hexLines = [];
+    for (let i = 0; i < processedData.length; i++) {
+        hexLines.push("0x" + (processedData[i] & 0xFF).toString(16).padStart(2, '0'));
+    }
+    const chunks = [];
+    for (let i = 0; i < hexLines.length; i += 16) {
+        chunks.push(hexLines.slice(i, i + 16).join(', '));
+    }
+    const colorModeCode = mode === 'sevenColor' ? 7
+                        : mode === 'sixColor'   ? 6
+                        : mode === 'fourColor'  ? 4
+                        : mode === 'threeColor' ? 3
+                        : mode === 'blackWhiteColor' ? 2 : 3;
+    return [
+        'const uint8_t imageData[] PROGMEM = {',
+        chunks.join(',\n'),
+        '};',
+        `const uint16_t imageWidth = ${width};`,
+        `const uint16_t imageHeight = ${height};`,
+        `const uint8_t colorMode = ${colorModeCode};`
+    ].join('\n');
+}
+
+// 槽位数据下载
+function triggerSlotDataDownload(slot, cached) {
+    try {
+        const mode = cached.colorId === 2 ? 'blackWhiteColor'
+                   : cached.colorId === 3 ? 'threeColor'
+                   : cached.colorId === 4 ? 'fourColor'
+                   : cached.colorId === 6 ? 'sixColor'
+                   : 'sevenColor';
+        const content = buildDataArrayContent(cached.data, cached.width, cached.height, mode);
+        const blob = new Blob([content], { type: 'text/plain' });
+        const link = document.createElement('a');
+        link.download = `slot_${slot + 1}_imagedata.h`;
+        link.href = URL.createObjectURL(blob);
+        link.click();
+        URL.revokeObjectURL(link.href);
+        addLog(`📥 槽位 ${slot + 1} 数据已下载为数组文件（${cached.data.length} 字节）`);
+    } catch (e) {
+        console.error(e);
+        addLog(`❌ 槽位 ${slot + 1} 下载失败：${e.message || e}`);
+    }
+}
+
+// 读取槽位数据用于下载（若已有缓存直接用）
+async function downloadImageSlot(slot) {
+    if (imageTransferActive || slotActionPending) return;
+    if (slotReadState) {
+        addLog('已有槽位图片正在读取，请稍候。');
+        return;
+    }
+    // 若本次会话中已读取过，直接使用内存缓存
+    if (slotRawDataCache.has(slot)) {
+        triggerSlotDataDownload(slot, slotRawDataCache.get(slot));
+        return;
+    }
+    const status = document.getElementById('slotReadStatus');
+    status.hidden = false;
+    status.textContent = `正在读取槽位 ${slot + 1} 用于下载...`;
+    slotReadState = {
+        slot,
+        pending: true,
+        infoAttempts: 0,
+        startedAt: new Date().getTime(),
+        downloadAfterRead: true   // 关键标志
+    };
+    updateButtonStatus();
+    await requestSlotImageInfo(slotReadState);
+}
+
+
+
+
+
+
 
 // ==================== 错误处理 ====================
 
@@ -1754,8 +1885,41 @@ async function sendimg(options = {}) {
     const statusEl = document.getElementById("status");
     statusEl.parentElement.style.display = "block";
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const processedData = processImageData(imageData, ditherMode);
+    // ★ 优先检查：上传过的原始数组是否可以直发（跳过二次处理）
+    let processedData = null;
+    let useUploadedData = false;
+    if (uploadedProcessedData &&
+        uploadedProcessedData.width === canvas.width &&
+        uploadedProcessedData.height === canvas.height &&
+        uploadedProcessedData.mode === ditherMode) {
+        const currentHash = computeCanvasHash();
+        if (uploadedProcessedData.canvasHash === currentHash) {
+            processedData = uploadedProcessedData.data;
+            useUploadedData = true;
+            addLog('📦 画布未被修改，直接使用上传的原始数组发送（跳过抖动/对比度/亮度等二次处理）');
+        } else {
+            addLog('📦 画布已被修改，将走常规处理流程');
+            uploadedProcessedData = null;
+        }
+    }
+
+    if (!useUploadedData) {
+        // 常规流程：抖动 + 亮度/对比度/饱和度 + 编码
+        const hasSpecialContent = paintManager && (
+            (paintManager.scheduleData && paintManager.scheduleData.length > 0) ||
+            (paintManager.todoData && paintManager.todoData.length > 0) ||
+            paintManager.cardData ||
+            paintManager.wifiData
+        );
+        if (hasSpecialContent) {
+            addLog("特殊内容发送：重绘画布（禁用抖动/对比度，直接按渲染结果发送）");
+            paintManager.redrawAll();
+        } else {
+            if (typeof convertDithering === 'function') convertDithering();
+        }
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        processedData = processImageData(imageData, ditherMode);
+    }
 
     // ---- 槽位支持 ----
     const targetSlot = Number.isInteger(options.slot) ? options.slot : null;
@@ -1943,6 +2107,7 @@ async function sendimg(options = {}) {
 }
 
 // ==================== 下载/上传数组 ====================
+/*旧函数
 function downloadDataArray() {
     if (cropManager.isCropMode()) {
         alert("请先完成图片裁剪！下载已取消。");
@@ -1982,6 +2147,35 @@ function downloadDataArray() {
         `const uint16_t imageHeight = ${canvas.height};`,
         `const uint8_t colorMode = ${colorModeCode};`
     ].join('\n');
+
+    const blob = new Blob([content], { type: 'text/plain' });
+    const link = document.createElement('a');
+    link.download = 'imagedata.h';
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+}*/  //修改 downloadDataArray() 复用新函数 buildDataArrayContent 统一图片封包
+function downloadDataArray() {
+    if (cropManager.isCropMode()) {
+        alert("请先完成图片裁剪！下载已取消。");
+        return;
+    }
+
+    const hasSpecial = paintManager && (
+        (paintManager.scheduleData && paintManager.scheduleData.length > 0) ||
+        (paintManager.todoData && paintManager.todoData.length > 0) ||
+        paintManager.cardData ||
+        paintManager.wifiData
+    );
+    if (hasSpecial) {
+        addLog("特殊内容下载：重绘画布（禁用抖动/对比度，直接导出PCF渲染结果）");
+        paintManager.redrawAll();
+    }
+
+    const mode = document.getElementById('ditherMode').value;
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const processedData = processImageData(imageData, mode);
+    const content = buildDataArrayContent(processedData, canvas.width, canvas.height, mode);
 
     const blob = new Blob([content], { type: 'text/plain' });
     const link = document.createElement('a');
@@ -2075,6 +2269,17 @@ function uploadDataArray() {
 
                 const decoded = decodeProcessedData(dataArray, width, height, modeStr);
                 ctx.putImageData(decoded, 0, 0);
+                
+                // ★ 关键：缓存上传的原始数组，发送时直接使用
+                uploadedProcessedData = {
+                    data: dataArray,
+                    width: width,
+                    height: height,
+                    mode: modeStr,
+                    canvasHash: computeCanvasHash()
+                };
+                addLog(`📦 已缓存上传数组（${dataArray.length} 字节），发送时将直接使用，不再二次处理`);
+
                 if (paintManager) {
                     paintManager.clearElements();
                     paintManager.saveToHistory();
@@ -2795,6 +3000,9 @@ function updateCanvasSize() {
     const size = canvasSizes.find(s => s.name === selected);
     canvas.width = size.width;
     canvas.height = size.height;
+    // ★ 尺寸变化，源图缓存和 hash 都失效
+    ditherSourceImageData = null;
+    _lastProcessedCanvasHash = -1;
     updateImage();
 }
 
@@ -2831,6 +3039,11 @@ function updateDitcherOptions() {
     if (color) document.getElementById('ditherMode').value = color;
     if (size) document.getElementById('canvasSize').value = size;
     updateCanvasSize();
+    
+    // ★ 同步刷新颜色浓度滑块
+    if (typeof renderColorDensitySliders === 'function') {
+        renderColorDensitySliders(document.getElementById('ditherMode').value);
+    }
 }
 
 function rotateCanvas() {
@@ -2953,6 +3166,8 @@ function syncCurrentCanvasToSide(side) {
     }
 }
 
+
+/*这个不支持颜色微调
 function convertDithering() {
 	// 如果是特殊模式（课表、待办等），不进行抖动
     const hasSpecial = paintManager && (
@@ -2998,10 +3213,163 @@ function convertDithering() {
     const final = decodeProcessedData(processed, canvas.width, canvas.height, mode);
     ctx.putImageData(final, 0, 0);
     if (paintManager) paintManager.saveToHistory();
+}*/
+function convertDithering() {
+    // 特殊模式（课表、待办等）不进行抖动
+    const hasSpecial = paintManager && (
+        (paintManager.scheduleData && paintManager.scheduleData.length > 0) ||
+        (paintManager.todoData && paintManager.todoData.length > 0) ||
+        paintManager.cardData ||
+        paintManager.wifiData
+    );
+    if (hasSpecial) {
+        addLog("特殊模式：已禁用抖动/对比度调整（直接发送渲染结果）");
+        return;
+    }
+
+    if (paintManager) {
+        paintManager.redrawTextElements();
+        paintManager.redrawLineSegments();
+    }
+
+    // ★★★ 关键修复：判断是否需要刷新"抖动源图" ★★★
+    //   场景 A：ditherSourceImageData 为空或尺寸变化 → 必须刷新
+    //   场景 B：画布被外部修改过（画笔/文字/图片/上传数组等）→ 需要刷新
+    //   判断依据：当前画布 hash 与上次"我们处理完写回的 hash"对比
+    //             若不同，说明画布被外部修改了，需重读画布作为源图
+    const currentHash = computeCanvasHash();
+    const needRefreshSource = !ditherSourceImageData
+        || ditherSourceImageData.width  !== canvas.width
+        || ditherSourceImageData.height !== canvas.height
+        || currentHash !== _lastProcessedCanvasHash;
+
+    if (needRefreshSource) {
+        const current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        ditherSourceImageData = new ImageData(
+            new Uint8ClampedArray(current.data),
+            current.width,
+            current.height
+        );
+        addLog("📷 已缓存/刷新原始图像作为抖动源（画布外部变更检测）");
+    }
+
+    // ★ 从缓存的源图深拷贝，绝不直接在画布上重复处理
+    let imgData = new ImageData(
+        new Uint8ClampedArray(ditherSourceImageData.data),
+        ditherSourceImageData.width,
+        ditherSourceImageData.height
+    );
+
+    // 2. 亮度调整
+    const brightness = parseFloat(document.getElementById('ditherBrightness').value);
+    if (!isNaN(brightness) && brightness !== 1.0) {
+        imgData = adjustBrightness(imgData, brightness);
+    }
+    // 3. 对比度调整
+    const contrast = parseFloat(document.getElementById('ditherContrast').value);
+    if (!isNaN(contrast)) {
+        imgData = adjustContrast(imgData, contrast);
+    }
+    // 饱和度调整
+    const saturation = parseFloat(document.getElementById('ditherSaturation').value);
+    if (!isNaN(saturation) && saturation !== 1.0) {
+        imgData = boostSaturation(imgData, saturation);
+    }
+    // 4. 抖动处理
+    const alg = document.getElementById('ditherAlg').value;
+    const strength = parseFloat(document.getElementById('ditherStrength').value);
+    const mode = document.getElementById('ditherMode').value;
+    if (typeof applyColorDensitiesToImage === 'function') {
+        imgData = applyColorDensitiesToImage(imgData, mode);
+    }
+    const processed = processImageData(ditherImage(imgData, alg, strength, mode), mode);
+    const final = decodeProcessedData(processed, canvas.width, canvas.height, mode);
+    ctx.putImageData(final, 0, 0);
+
+    // ★ 记录本次处理完写回画布后的 hash，供下次判断画布是否被外部修改
+    _lastProcessedCanvasHash = computeCanvasHash();
+
+    if (paintManager) paintManager.saveToHistory();
 }
 
 function applyDither() {
     cropManager.finishCrop(() => scheduleConvertDithering());
+}
+
+// ==================== 颜色浓度滑块 UI ====================
+function renderColorDensitySliders(mode) {
+    const row   = document.getElementById('colorDensityRow');
+    const panel = document.getElementById('colorDensityPanel');
+    if (!row || !panel) return;
+
+    const modeKey = (mode === 'blackWhite') ? 'blackWhiteColor' : mode;
+    const colors = (typeof COLOR_DENSITY_MAP !== 'undefined') ? COLOR_DENSITY_MAP[modeKey] : null;
+
+    if (!colors) {
+        row.style.display = 'none';
+        panel.innerHTML = '';
+        return;
+    }
+    row.style.display = '';
+    panel.innerHTML = '';
+
+    for (const name of colors) {
+        const value = (typeof getColorDensity === 'function')
+            ? getColorDensity(modeKey, name) : 1.0;
+        const cssColor = COLOR_NAME_TO_CSS[name] || '#888';
+
+        const wrap = document.createElement('div');
+        wrap.style.display = 'flex';
+        wrap.style.alignItems = 'center';
+        wrap.style.gap = '4px';
+
+        const swatch = document.createElement('span');
+        swatch.style.cssText = 'display:inline-block;width:12px;height:12px;border-radius:2px;border:1px solid #666;';
+        swatch.style.background = cssColor;
+
+        const label = document.createElement('label');
+        label.textContent = name + ':';
+        label.style.cssText = 'font-size:12px;min-width:42px;';
+
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.min = '0.5';
+        slider.max = '1.5';
+        slider.step = '0.05';
+        slider.value = value;
+        slider.style.width = '80px';
+        slider.dataset.mode = modeKey;
+        slider.dataset.color = name;
+
+        const valLabel = document.createElement('span');
+        valLabel.textContent = Number(value).toFixed(2);
+        valLabel.style.cssText = 'font-size:12px;min-width:32px;display:inline-block;';
+
+        slider.addEventListener('input', (e) => {
+            const v = parseFloat(e.target.value);
+            valLabel.textContent = v.toFixed(2);
+            if (typeof setColorDensity === 'function') setColorDensity(modeKey, name, v);
+            if (typeof scheduleConvertDithering === 'function') scheduleConvertDithering();
+        });
+
+        wrap.appendChild(swatch);
+        wrap.appendChild(label);
+        wrap.appendChild(slider);
+        wrap.appendChild(valLabel);
+        panel.appendChild(wrap);
+    }
+}
+
+function resetColorDensities() {
+    const mode = document.getElementById('ditherMode').value;
+    const modeKey = (mode === 'blackWhite') ? 'blackWhiteColor' : mode;
+    const colors = (typeof COLOR_DENSITY_MAP !== 'undefined') ? (COLOR_DENSITY_MAP[modeKey] || []) : [];
+    for (const name of colors) {
+        if (typeof setColorDensity === 'function') setColorDensity(modeKey, name, 1.0);
+    }
+    renderColorDensitySliders(mode);
+    if (typeof scheduleConvertDithering === 'function') scheduleConvertDithering();
+    addLog(`✅ 已重置 ${modeKey} 模式的所有颜色浓度为 1.0`);
 }
 
 // ==================== 假期同步功能 ====================
@@ -4071,6 +4439,22 @@ function initEventHandlers() {
             applyDither();
         });
     }
+    
+    // ★ 颜色模式切换时刷新浓度滑块
+    const ditherModeSelect = document.getElementById('ditherMode');
+    if (ditherModeSelect) {
+        ditherModeSelect.addEventListener('change', () => {
+            if (typeof renderColorDensitySliders === 'function') {
+                renderColorDensitySliders(ditherModeSelect.value);
+            }
+        });
+    }
+
+    // ★ 首次初始化浓度调色板 + 滑块
+    if (typeof renderColorDensitySliders === 'function') {
+        renderColorDensitySliders(document.getElementById('ditherMode').value);
+    }
+    
     const importBtn = document.getElementById("importholidaybutton");
     const holidayFile = document.getElementById("holidayJsonFile");
     if (importBtn && holidayFile) {

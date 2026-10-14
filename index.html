@@ -3,13 +3,13 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>墨水屏日历墨水屏日历20261012更新</title>
+    <title>墨水屏日历</title>
     <link rel="shortcut icon" type="image/png" href="favicon.png">
     <link rel="stylesheet" href="css/main.css?v=20251109">
 </head>
 <body>
 <div class="main">
-    <h3>墨水屏日历20261012更新</h3>
+    <h3>墨水屏日历支持外置Flash图像数据下载保存到本地</h3>
     <fieldset>
         <legend>蓝牙连接</legend>
         <div class="flex-container">
@@ -349,6 +349,15 @@
                         <label for="ditherSaturation">饱和度:</label>
                         <input type="range" min="0.5" max="2.0" step="0.1" value="1.0" id="ditherSaturation">
                         <label id="ditherSaturationValue">1.0</label>
+                    </div>
+                    <!-- ★ 新增：颜色浓度微调行（根据 ditherMode 动态生成滑块） -->
+                    <div class="flex-container canvas-tools" id="colorDensityRow" style="width:100%; display:none;">
+                        <div class="flex-group" id="colorDensityPanel" style="flex-wrap:wrap; gap:10px; align-items:center;">
+                            <!-- 由 JS 动态填充 -->
+                        </div>
+                        <div class="flex-group">
+                            <button type="button" class="secondary" onclick="resetColorDensities()">重置浓度</button>
+                        </div>
                     </div>
                 </div>
                 <div class="flex-container canvas-tools">

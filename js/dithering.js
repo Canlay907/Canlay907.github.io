@@ -289,6 +289,7 @@ for (let i = 0; i < 4096; i++) {
     _linearToSrgb[i] = Math.min(255, Math.max(0, Math.round(255 * (v > 0.0031308 ? 1.055 * Math.pow(v, 1 / 2.4) - 0.055 : 12.92 * v))));
 }
 
+/*
 //以前的, 还能用
 function findClosestColorOld(r, g, b, mode) {
   let palette;
@@ -331,7 +332,54 @@ function findClosestColorOld(r, g, b, mode) {
   }
 
   return closestColor;
+}*/
+function findClosestColorOld(r, g, b, mode) {//优化了颜色调节
+  let palette;
+  if (mode === 'fourColor') {
+    palette = fourColorPalette;
+  } else if (mode === 'threeColor') {
+    palette = threeColorPalette;
+  } else {
+    palette = rgbPalette;   // sixColor 及默认
+  }
+
+  // 蓝色特殊情况（仅限非三色、四色模式）
+  if (mode !== 'fourColor' && mode !== 'threeColor' && r < 50 && g < 150 && b > 100) {
+    return rgbPalette[2]; // 蓝色
+  }
+
+  // 三色模式下优先检测红色
+  if (mode === 'threeColor') {
+    if (r > 120 && r > g * 1.5 && r > b * 1.5) {
+      return threeColorPalette[2]; // 红色
+    }
+    const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+    return luminance < 128 ? threeColorPalette[0] : threeColorPalette[1];
+  }
+
+  const inputLab = rgbToLab(r, g, b);
+  let minDistance = Infinity;
+  let closestColor = palette[0];
+
+  // ★ 按颜色名加权（sixColor 的名字：黄色/绿色/蓝色/红色/黑色/白色）
+  const densityKey = (mode === 'sixColor') ? 'sixColor'
+                    : (mode === 'fourColor') ? 'fourColor'
+                    : (mode === 'threeColor') ? 'threeColor'
+                    : 'blackWhiteColor';
+
+  for (const color of palette) {
+    const colorLab = rgbToLab(color.r, color.g, color.b);
+    const w = _getColorDensityWeight(densityKey, color.name);
+    const distance = labDistance(inputLab, colorLab) * w;
+    if (distance < minDistance) {
+      minDistance = distance;
+      closestColor = color;
+    }
+  }
+
+  return closestColor;
 }
+/*
 //新改的, 看着准确度更高
 function findClosestColor(r, g, b, mode) {
   if (mode === 'sevenColor') {
@@ -372,6 +420,65 @@ function findClosestColor(r, g, b, mode) {
   } else { // blackWhite
     const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
     return luminance < 140 ? { r:0,g:0,b:0,value:0 } : { r:255,g:255,b:255,value:1 };
+  }
+}*/
+// ★ 颜色浓度加权：density > 1 → weight < 1 → 色差缩小 → 更易选中
+function _getColorDensityWeight(mode, colorName) {
+    const D = window.colorDensities && window.colorDensities[mode];
+    if (!D) return 1.0;
+    const d = D[colorName];
+    if (!d || d <= 0) return 1.0;
+    return 1.0 / d;
+}
+
+function findClosestColor(r, g, b, mode) {
+  if (mode === 'sevenColor') {
+    const targetLab = rgbToLabRed(r, g, b);
+    let best = epdSevenColorWithLab[0];
+    let bestDist = Infinity;
+    for (let i = 0; i < epdSevenColorWithLab.length; i++) {
+      const c = epdSevenColorWithLab[i];
+      const w = _getColorDensityWeight(mode, c.name);
+      const dist = ciede2000(targetLab, c.lab) * w;
+      if (dist < bestDist) { bestDist = dist; best = c; }
+    }
+    return best;
+  } else if (mode === 'sixColor') {
+    return findClosestColorOld(r, g, b, mode);
+  } else if (mode === 'fourColor') {
+    const targetLab = rgbToLabRed(r, g, b);
+    let best = epdFourColorWithLab[0];
+    let bestDist = Infinity;
+    for (let i = 0; i < epdFourColorWithLab.length; i++) {
+      const c = epdFourColorWithLab[i];
+      const w = _getColorDensityWeight(mode, c.name);
+      const dist = ciede2000(targetLab, c.lab) * w;
+      if (dist < bestDist) { bestDist = dist; best = c; }
+    }
+    return best;
+  } else if (mode === 'threeColor') {
+    const wRed   = _getColorDensityWeight(mode, '红色');
+    const wBlack = _getColorDensityWeight(mode, '黑色');
+    const wWhite = _getColorDensityWeight(mode, '白色');
+
+    // 红色检测：密度越高，红色阈值越低（越容易命中红色）
+    // wRed < 1 → redThreshold 更大（更易命中）；wRed > 1 → 阈值更小
+    const redGate = 120 / wRed;
+    const redRatio = 1.5 / wRed;   // 比例门限同样联动
+    if (r > redGate && r > g * redRatio && r > b * redRatio) {
+      return epdThreeColorWithLab.find(c => c.value === 0x02) || epdThreeColorWithLab[2];
+    }
+    // 黑白阈值：黑色越重 → 阈值越高（越多像素判黑）；白色越重 → 阈值越低
+    const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+    const bwThreshold = 128 * (wBlack / wWhite);
+    return luminance < bwThreshold ? epdThreeColorWithLab[0] : epdThreeColorWithLab[1];
+  } else { // blackWhite
+    const wBlack = _getColorDensityWeight(mode, '黑色');
+    const wWhite = _getColorDensityWeight(mode, '白色');
+    const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+    // 黑重 → 阈值高 → 更多像素判黑；白重 → 阈值低 → 更多像素判白
+    const threshold = 140 * (wBlack / wWhite);
+    return luminance < threshold ? { r:0,g:0,b:0,value:0 } : { r:255,g:255,b:255,value:1 };
   }
 }
 
@@ -2466,3 +2573,118 @@ function processImageData(imageData, mode) {
 
   return processedData;
 }
+
+
+// ==================== 颜色浓度微调（像素层，对标 boostSaturation）====================
+window.colorDensities = window.colorDensities || {
+    blackWhiteColor: {},
+    threeColor: {},
+    fourColor: {},
+    sixColor: {},
+    sevenColor: {}
+};
+
+const COLOR_DENSITY_MAP = {
+    blackWhiteColor: ['黑色', '白色'],
+    threeColor:      ['黑色', '白色', '红色'],
+    fourColor:       ['黑色', '白色', '红色', '黄色'],
+    sixColor:        ['黑色', '白色', '红色', '黄色', '绿色', '蓝色'],
+    sevenColor:      ['黑色', '白色', '红色', '黄色', '绿色', '蓝色', '橙色']
+};
+
+const COLOR_NAME_TO_CSS = {
+    '黑色': '#000000', '白色': '#ffffff', '红色': '#ff0000',
+    '黄色': '#ffff00', '绿色': '#00ff00', '蓝色': '#0000ff', '橙色': '#ff8000'
+};
+
+function getColorDensity(mode, colorName) {
+    const D = window.colorDensities[mode];
+    return (D && D[colorName]) || 1.0;
+}
+
+function setColorDensity(mode, colorName, value) {
+    if (!window.colorDensities[mode]) window.colorDensities[mode] = {};
+    window.colorDensities[mode][colorName] = value;
+}
+
+/**
+ * 像素级颜色浓度处理：
+ *   - 对每个像素按 realR/realG/realB 找到最接近的色板颜色
+ *   - 根据该颜色的密度把像素"增强"或"反向推离"该颜色
+ *   - 黑色：>1 更黑；<1 提亮
+ *   - 白色：>1 更白；<1 压暗
+ *   - 彩色：>1 朝该色靠（更纯/更饱和）；<1 远离（偏淡/中性）
+ * 在 ditherImage 之前调用，让抖动算法基于"调整后的像素"重新量化
+ */
+function applyColorDensitiesToImage(imageData, mode) {
+    const densities = window.colorDensities[mode];
+    if (!densities) return imageData;
+
+    let hasChange = false;
+    for (const k in densities) {
+        if (Math.abs(densities[k] - 1.0) > 0.001) { hasChange = true; break; }
+    }
+    if (!hasChange) return imageData;
+
+    let palette;
+    if (mode === 'sevenColor')      palette = epdRealColors.sevenColor;
+    else if (mode === 'sixColor')   palette = epdRealColors.sixColor;
+    else if (mode === 'fourColor')  palette = epdRealColors.fourColor;
+    else if (mode === 'threeColor') palette = epdRealColors.threeColor;
+    else                            palette = epdRealColors.blackWhite;
+
+    const data = imageData.data;
+    const len  = data.length;
+
+    for (let i = 0; i < len; i += 4) {
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+
+        let bestIdx = 0, bestDist = Infinity;
+        for (let j = 0; j < palette.length; j++) {
+            const c = palette[j];
+            const dr = r - c.realR, dg = g - c.realG, db = b - c.realB;
+            const dist = dr * dr + dg * dg + db * db;
+            if (dist < bestDist) { bestDist = dist; bestIdx = j; }
+        }
+        const color = palette[bestIdx];
+        const density = densities[color.name] || 1.0;
+        if (Math.abs(density - 1.0) < 0.001) continue;
+
+        const t = density - 1.0;   // 范围 [-0.5, +0.5]
+
+        if (color.name === '黑色') {
+            if (t > 0) {
+                const k = 1 - t;                       // t=0.5 → 0.5，更黑
+                data[i]     = Math.round(r * k);
+                data[i + 1] = Math.round(g * k);
+                data[i + 2] = Math.round(b * k);
+            } else {
+                const k = -t * 0.35;                   // 提亮，封顶 0.175
+                data[i]     = Math.round(r + (255 - r) * k);
+                data[i + 1] = Math.round(g + (255 - g) * k);
+                data[i + 2] = Math.round(b + (255 - b) * k);
+            }
+        } else if (color.name === '白色') {
+            if (t > 0) {
+                const k = t * 0.7;                     // 更白
+                data[i]     = Math.round(r + (255 - r) * k);
+                data[i + 1] = Math.round(g + (255 - g) * k);
+                data[i + 2] = Math.round(b + (255 - b) * k);
+            } else {
+                const k = -t * 0.5;                    // 压暗
+                data[i]     = Math.round(r * (1 - k));
+                data[i + 1] = Math.round(g * (1 - k));
+                data[i + 2] = Math.round(b * (1 - k));
+            }
+        } else {
+            // 彩色：>1 朝色板颜色靠（变纯/变饱和）；<1 反向推离（变淡/中性）
+            const tr = color.realR, tg = color.realG, tb = color.realB;
+            data[i]     = Math.max(0, Math.min(255, Math.round(r + (tr - r) * t)));
+            data[i + 1] = Math.max(0, Math.min(255, Math.round(g + (tg - g) * t)));
+            data[i + 2] = Math.max(0, Math.min(255, Math.round(b + (tb - b) * t)));
+        }
+    }
+    return imageData;
+}
+
+
