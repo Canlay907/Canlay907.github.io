@@ -129,6 +129,8 @@ let slotEraseAllPending = false;
 let ditherSourceImageData = null;  // 用于缓存抖动前的原始图像数据
 
 let _lastProcessedCanvasHash = -1; // 上一次处理完写回画布的 FNV-1a hash
+let canvasIsFinalized = false;     // ✅ 新增：画布为.h数组回显的最终态，禁止二次抖动
+let isSliderAdjusting = false;     // 滑块微调中，跳过needRefreshSource强制用缓存源图
 
 // ==================== 上传数组/槽位下载相关缓存 ====================
 let uploadedProcessedData = null;   // 上传的原始数组缓存 {data,width,height,mode,canvasHash}
@@ -1088,16 +1090,24 @@ function renderSlotGrid(forceDisabled = imageTransferActive || slotActionPending
 
 async function saveImageToSlot(slot) {
     if (imageTransferActive || slotActionPending) return;
+
     const imageFile = document.getElementById('imageFile');
-    if (!imageFile || imageFile.files.length === 0) {
-        alert('请先选择图片，再存入图片槽。');
-        addLog(`槽位 ${slot + 1} 未存入：尚未选择图片。`);
+    const hasFile = imageFile && imageFile.files.length > 0;
+    const hasUploadedArray = !!uploadedProcessedData;
+
+    // ✅ 修正：两种来源都没有才报错
+    if (!hasFile && !hasUploadedArray) {
+        alert('请先选择图片或上传 .h 数组，再存入图片槽。');
+        addLog(`槽位 ${slot + 1} 未存入：尚未选择图片且未上传数组。`);
         return;
     }
+
     const used = (slotState.usedMask & (1n << BigInt(slot))) !== 0n;
     if (used && !confirm(`槽位 ${slot + 1} 已有图片，确认覆盖？`)) return;
-    // 传入 noRefresh: true
-    await sendimg({ slot, noRefresh: true });
+
+    // ✅ 关键：上传.h数组是已量化的最终数据，必须跳过抖动
+    //   用 skipDither 告诉 sendimg 不要再二次处理
+    await sendimg({ slot, noRefresh: true, skipDither: hasUploadedArray });
 }
 
 async function freeImageSlot(slot) {
@@ -1865,7 +1875,13 @@ async function sendimg(options = {}) {
         paintManager.cardData ||
         paintManager.wifiData
     );
-    if (hasSpecialContent) {
+    
+    // 新增：外部明确要求的跳过抖动（用于.h数组回显）
+    const skipDither = options.skipDither === true || canvasIsFinalized;
+    
+    if (skipDither) {
+        addLog("🛡️ .h数组回显：跳过抖动/对比度，按当前画布直接发送");
+    } else if (hasSpecialContent) {
         addLog("特殊内容发送：重绘画布（禁用抖动/对比度，直接按渲染结果发送）");
         paintManager.redrawAll();
     } else {
@@ -2270,14 +2286,20 @@ function uploadDataArray() {
                 const decoded = decodeProcessedData(dataArray, width, height, modeStr);
                 ctx.putImageData(decoded, 0, 0);
                 
+                // ✅ 新增：上传.h数组本身就是最终已量化数据，应视为"已完成抖动"的状态
+                ditherSourceImageData = null;          // 关键：强迫下次重读
+                _lastProcessedCanvasHash = computeCanvasHash();  // 与当前画布对齐
+                
                 // ★ 关键：缓存上传的原始数组，发送时直接使用
                 uploadedProcessedData = {
                     data: dataArray,
                     width: width,
                     height: height,
                     mode: modeStr,
-                    canvasHash: computeCanvasHash()
+                    canvasHash: _lastProcessedCanvasHash
                 };
+                // uploadDataArray 里
+                canvasIsFinalized = true;   // 新增全局标志
                 addLog(`📦 已缓存上传数组（${dataArray.length} 字节），发送时将直接使用，不再二次处理`);
 
                 if (paintManager) {
@@ -2963,6 +2985,7 @@ function clearLog() {
 function fillCanvas(style) {
     ctx.fillStyle = style;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    canvasIsFinalized = false;   // ✅ 新增
 }
 
 function setCanvasTitle(title) {
@@ -3003,6 +3026,8 @@ function updateCanvasSize() {
     // ★ 尺寸变化，源图缓存和 hash 都失效
     ditherSourceImageData = null;
     _lastProcessedCanvasHash = -1;
+    canvasIsFinalized = false;   // ✅ 新增
+    uploadedProcessedData = null;// ✅ 新增：尺寸不匹配，缓存的数组也不能再直发
     updateImage();
 }
 
@@ -3059,6 +3084,7 @@ function rotateCanvas() {
     ctx.rotate(90 * Math.PI / 180);
     ctx.drawImage(offCanvas, -w / 2, -h / 2);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    canvasIsFinalized = false;   // ✅ 新增
     if (paintManager) {
         paintManager.clearHistory();
         paintManager.clearElements();
@@ -3158,6 +3184,7 @@ function syncCurrentCanvasToSide(side) {
         addLog(`✅ 已将当前画布内容同步到 B 面（尺寸 ${canvas.width}x${canvas.height}）`);
     }
     // 更新底部协议状态栏中的 A/B 面状态
+    canvasIsFinalized = true;    // ✅ 新增：同步进来的已是最终态
     updateUIBasedOnProtocol();
     // 若处于 AB 异显模式，可自动勾选启用抖动（视觉反馈）
     const abSelect = document.getElementById('abSelect');
@@ -3215,6 +3242,8 @@ function convertDithering() {
     if (paintManager) paintManager.saveToHistory();
 }*/
 function convertDithering() {
+    canvasIsFinalized = false;   // ✅ 关键：只要进入抖动流程，就说明画布被当作源图重新处理了
+    
     // 特殊模式（课表、待办等）不进行抖动
     const hasSpecial = paintManager && (
         (paintManager.scheduleData && paintManager.scheduleData.length > 0) ||
@@ -3226,11 +3255,27 @@ function convertDithering() {
         addLog("特殊模式：已禁用抖动/对比度调整（直接发送渲染结果）");
         return;
     }
+    
+    if (canvasIsFinalized) {
+        addLog("🛡️ 画布为已量化的.h数组回显，跳过二次抖动");
+        return;   // 直接返回，绝不再抖动
+    }
 
     if (paintManager) {
         paintManager.redrawTextElements();
         paintManager.redrawLineSegments();
     }
+    
+    // ===== 在 needRefreshSource 判定之前加这段 =====
+    if (!ditherSourceImageData 
+        || ditherSourceImageData.width !== canvas.width 
+        || ditherSourceImageData.height !== canvas.height) {
+        // 源图不存在或尺寸不匹配，从当前画布强制重读
+        ditherSourceImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        _lastProcessedCanvasHash = computeCanvasHash();
+        addLog("⚠️ 源图缓存为空，已从画布重新读取");
+    }
+    // =============================================
 
     // ★★★ 关键修复：判断是否需要刷新"抖动源图" ★★★
     //   场景 A：ditherSourceImageData 为空或尺寸变化 → 必须刷新
@@ -3238,10 +3283,16 @@ function convertDithering() {
     //   判断依据：当前画布 hash 与上次"我们处理完写回的 hash"对比
     //             若不同，说明画布被外部修改了，需重读画布作为源图
     const currentHash = computeCanvasHash();
-    const needRefreshSource = !ditherSourceImageData
+    let needRefreshSource = !ditherSourceImageData
         || ditherSourceImageData.width  !== canvas.width
         || ditherSourceImageData.height !== canvas.height
         || currentHash !== _lastProcessedCanvasHash;
+        
+    // 滑块微调时：强制使用缓存源图，不重读画布（避免二次抖动已量化点阵）
+    if (isSliderAdjusting) {
+        needRefreshSource = false;
+    }
+    isSliderAdjusting = false;   // 用完立即复位，只影响当次
 
     if (needRefreshSource) {
         const current = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -3298,6 +3349,7 @@ function applyDither() {
 
 // ==================== 颜色浓度滑块 UI ====================
 function renderColorDensitySliders(mode) {
+    isSliderAdjusting = true;   // ✅ 加这一行
     const row   = document.getElementById('colorDensityRow');
     const panel = document.getElementById('colorDensityPanel');
     if (!row || !panel) return;
@@ -3361,6 +3413,7 @@ function renderColorDensitySliders(mode) {
 }
 
 function resetColorDensities() {
+    isSliderAdjusting = true;   // ✅ 加这一行
     const mode = document.getElementById('ditherMode').value;
     const modeKey = (mode === 'blackWhite') ? 'blackWhiteColor' : mode;
     const colors = (typeof COLOR_DENSITY_MAP !== 'undefined') ? (COLOR_DENSITY_MAP[modeKey] || []) : [];
@@ -3955,6 +4008,7 @@ async function previewImageOnCanvas(file) {
         imageData.data.set(temp.data);
     }
     ctx.putImageData(imageData, 0, 0);
+    canvasIsFinalized = true;    // ✅ 新增：内部已抖动，禁止二次抖动
     if (paintManager) paintManager.saveToHistory();
     addLog(`预览完成（尺寸：${canvas.width}x${canvas.height}）`);
 }
@@ -4412,10 +4466,12 @@ function updatePwmUI() {
 // 事件初始化（包含新增亮度滑块和同步时间按钮的监听）
 function initEventHandlers() {
     document.getElementById("ditherStrength").addEventListener("input", (e) => {
+        isSliderAdjusting = true;   // ✅ 加这一行
         document.getElementById("ditherStrengthValue").innerText = parseFloat(e.target.value).toFixed(1);
         applyDither();
     });
     document.getElementById("ditherContrast").addEventListener("input", (e) => {
+        isSliderAdjusting = true;   // ✅ 加这一行
         document.getElementById("ditherContrastValue").innerText = parseFloat(e.target.value).toFixed(1);
         applyDither();
     });
@@ -4424,6 +4480,7 @@ function initEventHandlers() {
     const brightnessValue = document.getElementById('ditherBrightnessValue');
     if (brightnessSlider && brightnessValue) {
         brightnessSlider.addEventListener('input', (e) => {
+            isSliderAdjusting = true;   // ✅ 加这一行
             ditherBrightness = parseFloat(e.target.value);
             brightnessValue.innerText = ditherBrightness.toFixed(1);
             applyDither();
@@ -4434,6 +4491,7 @@ function initEventHandlers() {
     const saturationValue = document.getElementById('ditherSaturationValue');
     if (saturationSlider && saturationValue) {
         saturationSlider.addEventListener('input', (e) => {
+            isSliderAdjusting = true;   // ✅ 加这一行
             const val = parseFloat(e.target.value);
             saturationValue.innerText = val.toFixed(1);
             applyDither();
